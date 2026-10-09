@@ -770,40 +770,6 @@ function closeInspectorModal() {
   document.getElementById("inspectorModal").classList.remove("active");
 }
 
-// ==========================================================================
-// INTERACTIVE ALGORITHM LAB CONTROLS
-// ==========================================================================
-function setMergeDemoMode(mode) {
-  const btnNaive = document.getElementById("btnMergeNaive");
-  const btnMerge = document.getElementById("btnMergeSafe");
-  const preview = document.getElementById("mergePreviewContent");
-
-  if (mode === "naive") {
-    btnNaive.classList.add("active");
-    btnMerge.classList.remove("active");
-    preview.innerHTML = `<span style="color:#fb7185;">-- Standard INSERT (Running DAG twice for 2026-10-09)</span>
-INSERT INTO DAILY_STOCK_METRICS (symbol, date, close) VALUES ('AAPL', '2026-10-09', 181.87);
-INSERT INTO DAILY_STOCK_METRICS (symbol, date, close) VALUES ('AAPL', '2026-10-09', 181.87);
-
-<span style="color:#fb7185;">-- RESULT IN WAREHOUSE: ❌ CORRUPTED (2 IDENTICAL ROWS)</span>
-| AAPL | 2026-10-09 | $181.87 | Volume: 52.4M | Run #1 |
-| AAPL | 2026-10-09 | $181.87 | Volume: 52.4M | Run #2 (DUPLICATE!) |
-Total Rows for Day: 20 (Volume Double-Counted!)`;
-  } else {
-    btnMerge.classList.add("active");
-    btnNaive.classList.remove("active");
-    preview.innerHTML = `<span style="color:#34d399;">-- Snowflake Atomic MERGE INTO (Running DAG twice for 2026-10-09)</span>
-MERGE INTO DAILY_STOCK_METRICS target
-USING TEMP_DAILY_STOCK_STAGE stage
-ON target.symbol = stage.symbol AND target.date = stage.date
-WHEN MATCHED THEN UPDATE SET target.close = stage.close, ...
-WHEN NOT MATCHED THEN INSERT ...
-
-<span style="color:#34d399;">-- RESULT IN WAREHOUSE: ✅ CLEAN & DEDUPLICATED (1 ROW UPDATED)</span>
-| AAPL | 2026-10-09 | $181.87 | Volume: 52.4M | Updated in place |
-Total Rows for Day: 10 (Zero Duplication & 100% Idempotent!)`;
-  }
-}
 
 // Render Data Explorer Table
 function renderExplorerTable() {
