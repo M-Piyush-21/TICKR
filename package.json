@@ -1,0 +1,25 @@
+{
+  "name": "stock-market-datapipeline-web",
+  "version": "1.0.0",
+  "description": "Stock Market Data Engineering Pipeline - Real-time & Batch Monitoring Dashboard",
+  "scripts": {
+    "start": "serve .",
+    "dev": "serve . -l 3000",
+    "build": "echo 'Static assets ready for Vercel deployment'"
+  },
+  "dependencies": {
+    "serve": "^14.2.4"
+  },
+  "keywords": [
+    "stock-market",
+    "data-engineering",
+    "kafka",
+    "spark",
+    "airflow",
+    "snowflake",
+    "minio",
+    "dashboard"
+  ],
+  "author": "Antigravity",
+  "license": "MIT"
+}
