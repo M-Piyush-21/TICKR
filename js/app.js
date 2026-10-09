@@ -1,5 +1,5 @@
 /**
- * StockPulse Data Engineering Dashboard
+ * TICKR Data Engineering Dashboard
  * Interactive Stock Market Data Pipeline Frontend & Architecture Visualizer
  */
 

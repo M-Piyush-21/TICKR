@@ -606,5 +606,5 @@ Use these concise talking points when explaining this project in an interview or
 ---
 
 <p align="center">
-  <strong>StockPulse Data Engineering Architecture</strong> &bull; Production Data Engineering Made Clear
+  <strong>TICKR Data Engineering Architecture</strong> &bull; Production Data Engineering Made Clear
 </p>
