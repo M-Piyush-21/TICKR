@@ -1,3 +1,7 @@
-requirements.txt
+requirements*.txt
 *.py
-src/**/*.py
+src/**
+tests/**
+docker-compose.yaml
+commands.sh
+data/**
