@@ -17,135 +17,6 @@ const STOCKS_DATA = {
   V:     { name: "Visa Inc.", sector: "Payment Technology", basePrice: 282.10, vol: "8.4M" }
 };
 
-// Data Journey Stages Information
-const JOURNEY_STAGES = [
-  {
-    num: "Stage 01",
-    layer: "Raw Source",
-    layerClass: "layer-raw",
-    title: "AlphaVantage REST Ingestion",
-    short: "Polls 10 major equities with deliberate rate-limiting.",
-    desc: "The batch producer polls AlphaVantage's TIME_SERIES_DAILY endpoint for 10 target tickers. Because free API tiers enforce a 5 calls/minute ceiling, the pipeline introduces a deliberate 12-second throttle between queries to avoid HTTP 429 quota bans.",
-    challenge: "API Quota & Ban Prevention",
-    solution: "A 12s sleep timer spaces out the 10 ticker requests over 2 minutes, staying safely within the 5 calls/min limit. The DAG's catchup=False flag prevents retrospective backfill spikes.",
-    file: "src/kafka/producer/batch_data_producer.py",
-    payloadTitle: "AlphaVantage JSON Response (AAPL)",
-    payload: `{
-  "Meta Data": {
-    "1. Information": "Daily Prices (open, high, low, close) and Volumes",
-    "2. Symbol": "AAPL",
-    "3. Last Refreshed": "2026-10-09"
-  },
-  "Time Series (Daily)": {
-    "2026-10-09": {
-      "1. open": "181.6700",
-      "2. high": "182.2900",
-      "3. low": "181.0100",
-      "4. close": "181.8700",
-      "5. volume": "52410200"
-    }
-  }
-}`
-  },
-  {
-    num: "Stage 02",
-    layer: "Buffer Queue",
-    layerClass: "layer-buffer",
-    title: "Kafka Decoupled Message Bus",
-    short: "Decouples external producers from downstream lake storage.",
-    desc: "AlphaVantage responses are serialized into JSON messages and published to Kafka topic 'stock-market-batch'. Kafka acts as a distributed shock-absorber: if S3 storage or compute layers experience network hiccups, data is durably preserved in Kafka partitions.",
-    challenge: "Zero In-Flight Message Loss",
-    solution: "The producer executes an explicit producer.flush() before exiting, and consumers disable auto-commit (enable.auto.commit=False), advancing offsets only after data is securely written to storage.",
-    file: "src/kafka/producer/batch_data_producer.py",
-    payloadTitle: "Kafka Message Payload (stock-market-batch)",
-    payload: `{
-  "topic": "stock-market-batch",
-  "partition": 1,
-  "offset": 1042,
-  "key": "AAPL",
-  "timestamp": 1728472800000,
-  "value": {
-    "symbol": "AAPL",
-    "date": "2026-10-09",
-    "open": 181.67,
-    "high": 182.29,
-    "low": 181.01,
-    "close": 181.87,
-    "volume": 52410200
-  }
-}`
-  },
-  {
-    num: "Stage 03",
-    layer: "Bronze Lake",
-    layerClass: "layer-bronze",
-    title: "MinIO S3 Object Storage (Bronze)",
-    short: "Immutable raw CSV files partitioned by year, month, and day.",
-    desc: "The Kafka consumer reads messages and writes them directly to an S3-compatible MinIO object lake under 'raw/historical/year=YYYY/month=MM/day=DD/'. Storing unmodified raw data guarantees an immutable audit trail without expensive warehouse compute costs.",
-    challenge: "Hive Partition Pruning",
-    solution: "Directory partitioning allows downstream query engines like Spark to skip 99.9% of historical lake files, inspecting only the targeted day's partition directory.",
-    file: "src/kafka/consumer/batch_data_consumer.py",
-    payloadTitle: "S3 Raw Partition File (AAPL_145301.csv)",
-    payload: `symbol,date,open,high,low,close,volume
-AAPL,2026-10-09,181.67,182.29,181.01,181.87,52410200
-
-# Physical Storage Location:
-# s3a://stock-market-data/raw/historical/year=2026/month=10/day=09/AAPL_145301.csv`
-  },
-  {
-    num: "Stage 04",
-    layer: "Silver Compute",
-    layerClass: "layer-silver",
-    title: "Apache Spark Batch Processing (Silver)",
-    short: "PySpark window aggregations, OHLCV metrics & Parquet compression.",
-    desc: "A distributed Spark job reads the day's raw CSVs, enforces numeric schemas, applies window functions across symbol partitions, calculates moving averages (MA15, MA30) and percentage price changes, and writes Snappy-compressed Parquet files.",
-    challenge: "Schema Ingestion & Columnar Compression",
-    solution: "Using inferSchema=True and writing Snappy Parquet achieves 85% storage reduction compared to raw CSV while providing column-level statistics for fast analytical querying.",
-    file: "src/spark/jobs/spark_batch_processor.py",
-    payloadTitle: "PySpark Processed Parquet Schema (Silver)",
-    payload: `root
- |-- symbol: string (partition column)
- |-- date: string (nullable = true)
- |-- daily_open: double (nullable = true)
- |-- daily_high: double (nullable = true)
- |-- daily_low: double (nullable = true)
- |-- daily_close: double (nullable = true)
- |-- daily_volume: long (nullable = true)
- |-- daily_change: double (nullable = true)
- |-- ma_15: double (nullable = true)
- |-- ma_30: double (nullable = true)
- |-- last_updated: timestamp (nullable = true)`
-  },
-  {
-    num: "Stage 05",
-    layer: "Gold Warehouse",
-    layerClass: "layer-gold",
-    title: "Snowflake Warehouse Upsert (Gold)",
-    short: "Idempotent MERGE upsert into DAILY_STOCK_METRICS.",
-    desc: "Processed Parquet files are read and bulk-loaded via write_pandas into a temporary staging table in Snowflake. An atomic SQL MERGE INTO operation updates existing records or inserts new rows, making pipeline execution completely idempotent.",
-    challenge: "Safe Retries Without Row Duplication",
-    solution: "Standard INSERT creates duplicate rows on retried DAG runs. The atomic MERGE INTO key (symbol, date) updates rows in place, keeping analytics clean and trustworthy.",
-    file: "src/snowflake/scripts/load_to_snowflake.py",
-    payloadTitle: "Snowflake MERGE INTO Statement (Gold)",
-    payload: `MERGE INTO STOCKMARKETBATCH.PUBLIC.DAILY_STOCK_METRICS AS target
-USING TEMP_DAILY_STOCK_STAGE AS stage
-ON target.symbol = stage.symbol AND target.date = stage.date
-
-WHEN MATCHED THEN
-    UPDATE SET
-        target.daily_open   = stage.daily_open,
-        target.daily_high   = stage.daily_high,
-        target.daily_low    = stage.daily_low,
-        target.daily_close  = stage.daily_close,
-        target.daily_volume = stage.daily_volume,
-        target.daily_change = stage.daily_change,
-        target.last_updated = CURRENT_TIMESTAMP()
-
-WHEN NOT MATCHED THEN
-    INSERT (symbol, date, daily_open, daily_high, daily_low, daily_close, daily_volume, daily_change, last_updated)
-    VALUES (stage.symbol, stage.date, stage.daily_open, stage.daily_high, stage.daily_low, stage.daily_close, stage.daily_volume, stage.daily_change, CURRENT_TIMESTAMP());`
-  }
-];
 
 // Component Deep-Dive Specs
 const COMPONENT_SPECS = {
@@ -702,50 +573,6 @@ function toggleStreaming() {
   }
 }
 
-// ==========================================================================
-// DATA JOURNEY STEPPER INTERACTIVITY
-// ==========================================================================
-function renderJourneyStepper() {
-  const container = document.getElementById("journeyStepperCards");
-  if (!container) return;
-
-  container.innerHTML = "";
-  JOURNEY_STAGES.forEach((stage, idx) => {
-    const card = document.createElement("div");
-    card.className = `step-card ${idx === state.activeJourneyIndex ? "active" : ""}`;
-    card.onclick = () => selectJourneyStage(idx);
-
-    card.innerHTML = `
-      <div class="step-header">
-        <span class="step-number">${stage.num}</span>
-        <span class="step-layer-tag ${stage.layerClass}">${stage.layer}</span>
-      </div>
-      <h4>${stage.title}</h4>
-      <p>${stage.short}</p>
-    `;
-    container.appendChild(card);
-  });
-
-  updateJourneyShowcase();
-}
-
-function selectJourneyStage(idx) {
-  state.activeJourneyIndex = idx;
-  renderJourneyStepper();
-}
-
-function updateJourneyShowcase() {
-  const stage = JOURNEY_STAGES[state.activeJourneyIndex];
-  if (!stage) return;
-
-  document.getElementById("showcaseTitle").textContent = `${stage.num}: ${stage.title}`;
-  document.getElementById("showcaseDesc").textContent = stage.desc;
-  document.getElementById("showcaseChallengeTitle").textContent = `Challenge: ${stage.challenge}`;
-  document.getElementById("showcaseChallengeDesc").textContent = stage.solution;
-  document.getElementById("showcaseFile").textContent = stage.file;
-  document.getElementById("showcasePayloadTitle").textContent = stage.payloadTitle;
-  document.getElementById("showcasePayload").textContent = stage.payload;
-}
 
 // ==========================================================================
 // COMPONENT INSPECTOR MODAL
@@ -926,7 +753,6 @@ document.addEventListener("DOMContentLoaded", () => {
   updateStockHero();
   drawChart();
   renderExplorerTable();
-  renderJourneyStepper();
 
   // Chart type toggles
   document.getElementById("btnCandles").onclick = () => {

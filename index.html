@@ -276,53 +276,6 @@
 
     </div>
 
-    <!-- ================================================================= -->
-    <!-- SECTION 1: INTERACTIVE DATA JOURNEY TRACKER (BRONZE -> SILVER -> GOLD) -->
-    <!-- ================================================================= -->
-    <section class="journey-panel glass">
-      <div class="section-title-wrap">
-        <div>
-          <h2 class="section-title">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--accent-cyan);">
-              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-            </svg>
-            The Data Journey: Medallion Architecture in Action
-          </h2>
-          <p class="section-subtitle">Click each stage below to explore how a raw market price transforms into production warehouse metrics.</p>
-        </div>
-      </div>
-
-      <!-- 5-Stage Stepper Buttons -->
-      <div class="journey-stepper" id="journeyStepperCards">
-        <!-- Rendered dynamically by app.js -->
-      </div>
-
-      <!-- Stage Detail Box -->
-      <div class="stage-showcase-box">
-        <div class="showcase-left">
-          <h3 id="showcaseTitle">Stage 01: AlphaVantage REST Ingestion</h3>
-          <p class="showcase-desc" id="showcaseDesc">Loading stage information...</p>
-
-          <div class="solution-callout">
-            <h5 id="showcaseChallengeTitle">Challenge: API Rate Limiting</h5>
-            <p id="showcaseChallengeDesc">Explanation of how this stage solves production pitfalls.</p>
-          </div>
-
-          <div style="margin-top: 1rem; font-size: 0.76rem; font-family: var(--font-mono); color: var(--text-dim);">
-            Source Script: <span id="showcaseFile" style="color: var(--accent-cyan);">src/kafka/producer/batch_data_producer.py</span>
-          </div>
-        </div>
-
-        <div class="code-viewer-container">
-          <div class="viewer-header">
-            <span id="showcasePayloadTitle">Payload Preview</span>
-            <span>JSON / DDL</span>
-          </div>
-          <pre class="viewer-content" id="showcasePayload"><code>// Loading payload...</code></pre>
-        </div>
-      </div>
-    </section>
-
 
     <!-- Bottom Section: Data Lake & Warehouse Explorer -->
     <section class="data-explorer-panel glass">
