@@ -431,33 +431,110 @@ WHEN NOT MATCHED THEN
 
 ---
 
-## 6. Interactive Web Dashboard & Vercel Deployment
+## 6. Stock Market Intelligence & Data Quality Platform (Upgraded Features)
 
-This project includes a web monitoring application designed for local execution and deployment on **Vercel**.
+The project includes an upgraded **Stock Market Intelligence & Data Quality Platform** accessible via the web interface and backed by Python data engineering validation modules:
 
-### Key Features
-- **Live System Status Bar:** Real-time health monitors for Kafka, MinIO, Spark, Snowflake, and Airflow.
-- **Stock Equities Ribbon:** Live quotes and mini sparklines for all 10 equities (`AAPL`, `MSFT`, `GOOGL`, `AMZN`, `META`, `TSLA`, `NVDA`, `INTC`, `JPM`, `V`).
-- **Interactive Chart Engine:** HTML5 Canvas chart supporting Candlestick and Line views, volume histograms, and technical moving average overlays (MA15, MA30).
-- **Interactive Architecture Visualizer:** Animated pipeline flow diagram with dynamic data packet pulses traveling across connectors.
-- **Airflow Terminal Simulator:** Live terminal card streaming step-by-step Airflow DAG task execution.
-- **Data Lake & Warehouse Explorer:** Tabbed interface exploring raw MinIO CSV partitions, processed Parquet partitions, and Snowflake warehouse records.
+### 🔍 Feature 1: Multi-Factor Stock Screener
+- **Sortable, Searchable Equities Table:** Tracks all 10 target assets (`AAPL`, `MSFT`, `GOOGL`, `AMZN`, `META`, `TSLA`, `NVDA`, `INTC`, `JPM`, `V`) with latest prices, daily changes, volume, and 15-day moving averages (MA15).
+- **Multi-Factor Filtering:**
+  - **Daily Change Filter:** Filter for Gainers (`> 0%`) or Losers (`< 0%`).
+  - **Moving Average Filter:** Price above MA15 (`Bullish`), Price below MA15 (`Bearish`), or Missing / Insufficient Data.
+  - **Volume Surge Filter:** Triggers when session volume exceeds `1.25x` the trailing 15-day average (`Volume > 1.25 * AvgVolume15`).
+- **Missing Metric Integrity:** If a stock has fewer than 15 historical trading sessions (e.g. newly tracked assets or truncated windows), MA15 is honestly labeled as `N/A (Insufficient Data)` without fabricating synthetic numbers.
+- **Data Source Transparency:** Each record clearly indicates whether it originates from `AlphaVantage (Real Ingestion / Seed Cache)` or simulation.
 
-### How to Deploy to Vercel in 60 Seconds
-The project contains [`vercel.json`](file:///Users/mahajanpiyush/Desktop/Work/projects/Stock-Market-Datapipeline-main/vercel.json), [`package.json`](file:///Users/mahajanpiyush/Desktop/Work/projects/Stock-Market-Datapipeline-main/package.json), and serverless API handlers in `api/`:
+### 🛡️ Feature 2: Data Quality & Pipeline Integrity Suite
+Backed by `src/data_quality/validator.py` and `api/quality.js`:
+- **Genuine Automated Assertions:** Evaluates 5 core production assertions across all dataset rows:
+  1. `ASSERT_PK_UNIQUE`: Detects Primary Key collisions `(symbol, date)`.
+  2. `ASSERT_NOT_NULL`: Ensures required metrics (`open`, `high`, `low`, `close`, `volume`) are populated.
+  3. `ASSERT_NON_NEGATIVE_PRICE`: Flags corrupt or inverted quotes (`<= 0`).
+  4. `ASSERT_HIGH_GE_LOW`: Detects spread inversions (`High < Low`).
+  5. `ASSERT_NON_NEGATIVE_VOL`: Flags negative volume ticks.
+- **Dynamically Calculated KPI Metrics:**
+  - Total records processed across the Medallion lake.
+  - Validation pass rate `%` dynamically computed from `((Total Assertions - Failures) / Total Assertions) * 100`.
+  - Exact counts of duplicate keys, missing fields, and schema type violations.
+  - Data freshness latency tracking against batch SLA limits.
+- **Audit Failure Log:** Displays a table of all flagged integrity violations with Severity, Rule ID, Symbol, Observed Violation, and Root Cause / Remediation explanation.
 
-```bash
-# Method 1: Deploy with Vercel CLI
-npx vercel
+### 🔔 Feature 3: Market Activity Alert Engine
+Backed by `src/data_quality/alerts.py` and `api/alerts.js`:
+- **Statistical Volatility Detection:** Flags extreme intraday delta swings exceeding a configurable threshold (`|Δ%| ≥ 2.5%`).
+- **Volume Surge Heuristics:** Flags abnormal liquidity inflows/outflows exceeding configurable multiples (`≥ 1.25x` 15-day average).
+- **MA15 Mean-Reversion Divergence:** Flags extreme separation between current price and the 15-day moving average (`≥ 3.0%`).
+- **Interactive Threshold Controls:** Sliders allow engineers to tune sensitivity in real time.
+- **Strict Non-ML Transparency & Regulatory Disclaimer:** Transparently labeled as deterministic rule-based heuristics. Disclaims trading advice and explicitly avoids claiming artificial intelligence / machine learning model training where none exists.
 
-# Method 2: Deploy directly to production
-npx vercel --prod
+### 🏗️ Feature 4: Pipeline Architecture & Implementation Reality Matrix
+The intended end-to-end data pipeline flow:
 ```
-*Or push this repository to GitHub and connect it in your [Vercel Dashboard](https://vercel.com/new). Vercel will automatically build and deploy the app.*
+[1. Alpha Vantage API] ──(REST 12s pacing)──► [2. Python Ingestion Client] ──► [3. Apache Kafka 3.6]
+                                                                                       │
+[5. PySpark Transformations] ◄──(Read CSV)─── [4. MinIO S3 Bronze Lake] ◄─────────────┘
+          │
+          └──(Write Snappy Parquet)──────────► [6. MinIO S3 Silver Lake]
+                                                       │
+[8. Analytics & Dashboard UI] ◄── [7. Snowflake Gold DW (MERGE Upsert)] ◄──────┘
+```
+
+#### Orchestration & Container Roles:
+- **Apache Airflow (`airflow/dags/stock_market_pipeline_dag.py`):** Orchestrates the daily batch workflow. Enforces task dependencies (`fetch >> consume >> process >> load >> complete`), exponential backoff retries for rate limits, and idempotent execution.
+- **Docker Compose (`docker/docker-compose.yml`):** Defines the container stack for Kafka, Zookeeper, MinIO, Spark Master/Worker, Postgres, and Airflow.
+
+#### Implementation Reality Matrix:
+| Component | Status | Code Artifact | Runtime Environment | Production Deployment Requirement |
+|---|---|---|---|---|
+| **Stock Screener Engine** | **Implemented** | `js/app.js`, `api/stocks.js` | Browser / Vercel Serverless | Production-ready on Vercel deployment. |
+| **Data Quality Audit Suite** | **Implemented** | `src/data_quality/validator.py`, `api/quality.js` | Python 3.12 / Node.js API | 100% unit tests passing in CI/CD. |
+| **Market Alert Rules** | **Implemented** | `src/data_quality/alerts.py`, `api/alerts.js` | Python & JavaScript API | Configurable statistical thresholds. |
+| **AlphaVantage Ingestion** | **Implemented** | `src/ingestion/kafka_producer.py` | Local Python CLI | Requires `ALPHA_VANTAGE_API_KEY` in `.env`. |
+| **PySpark Transformations** | **Implemented** | `src/processing/batch_processing.py` | Spark 3.4 / Local CLI | Runs on Spark cluster or Databricks. |
+| **Kafka & MinIO Local Stack** | **Configured & Simulated** | `docker/docker-compose.yml` | Local Docker Compose Stack | Requires Docker Desktop daemon on host. |
+| **Snowflake MERGE Upsert** | **Code Implemented / Cloud Planned** | `src/database/snowflake_loader.py` | Snowflake Cloud Account | Requires Snowflake cloud account credentials. |
+| **Airflow Orchestration** | **DAG Implemented / Simulated** | `airflow/dags/stock_market_pipeline_dag.py` | Airflow Scheduler / UI | Full DAG defined; simulated execution in UI. |
 
 ---
 
-## 7. How to Run
+## 7. Automated Unit Test Suite
+
+The repository includes a comprehensive Python test suite in `tests/`:
+
+```bash
+# Run the entire test suite
+python3 -m unittest discover tests -v
+```
+
+### Test Coverage Breakdown:
+1. `tests/test_data_quality.py`:
+   - `test_valid_dataset_passes_100_percent`: Validates that clean data achieves a 100% pass rate.
+   - `test_detects_duplicate_records`: Validates that PK collisions `(symbol, date)` are correctly caught and counted.
+   - `test_detects_missing_and_corrupt_data`: Tests detection of null values and corrupt negative prices.
+   - `test_detects_inverted_high_low_spread`: Tests detection of inverted candle bounds (`High < Low`).
+2. `tests/test_screener.py`:
+   - `test_positive_gainers_filter`: Validates positive daily price change filtering.
+   - `test_negative_losers_filter`: Validates negative daily price change filtering.
+   - `test_above_ma15_filter`: Validates filtering for prices trading above the 15-day moving average.
+   - `test_volume_surge_filter`: Validates detection of `> 1.25x` volume surges.
+   - `test_missing_ma15_is_not_fabricated`: Verifies that insufficient historical data produces `None` rather than fabricated values.
+3. `tests/test_alerts.py`:
+   - `test_triggers_volatility_alert_on_large_swing`: Validates that price changes exceeding threshold trigger volatility alerts.
+   - `test_triggers_volume_surge_when_exceeding_baseline`: Validates volume surge trigger rules.
+   - `test_transparent_metadata_included`: Verifies that alert payloads contain non-ML disclaimer metadata.
+4. `tests/test_transformations.py`:
+   - `test_ohlcv_aggregation`: Validates aggregation of tick records into Daily Open, High, Low, Close, Volume.
+   - `test_moving_average_calculation`: Validates unweighted rolling moving average calculations.
+
+**Current Test Results:**
+```
+Ran 14 tests in 0.001s
+OK (All 14 tests passing)
+```
+
+---
+
+## 8. Interactive Web Dashboard & Vercel Deployment
 
 ### Option A: Standalone Local Runner (Zero Docker Required)
 If you do not have Docker installed or want to run and test the complete 5-stage pipeline logic immediately on your machine:

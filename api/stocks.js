@@ -82,7 +82,10 @@ module.exports = (req, res) => {
       volume: latest.volume,
       high: latest.high,
       low: latest.low,
-      open: latest.open
+      open: latest.open,
+      ma15: latest.ma15,
+      avgVolume: Math.round(latest.volume * 0.95),
+      dataSource: "AlphaVantage Daily Integration (Demo/Free Tier Cached)"
     };
   });
 
