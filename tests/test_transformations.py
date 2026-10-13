@@ -1,64 +1,53 @@
 """
-tests/test_transformations.py
------------------------------
-Unit tests verifying pipeline data transformations:
-- Daily OHLCV candle calculations
-- Moving average (MA15, MA30) sliding windows
-- Percentage change calculations
+Unit tests for candle construction and moving averages.
+
+Daily candles are not re-summed. Interval bars are ordered by event time.
 """
 
 import unittest
 
-def calculate_ohlcv(ticks):
-    """Calculates canonical OHLCV metrics from a sequence of price/volume ticks."""
-    if not ticks:
-        return None
-    open_p = ticks[0]["price"]
-    close_p = ticks[-1]["price"]
-    high_p = max(t["price"] for t in ticks)
-    low_p = min(t["price"] for t in ticks)
-    vol_sum = sum(t["volume"] for t in ticks)
-    pct_change = round(((close_p - open_p) / open_p) * 100, 2)
-    return {
-        "open": open_p,
-        "high": high_p,
-        "low": low_p,
-        "close": close_p,
-        "volume": vol_sum,
-        "percent_change": pct_change
-    }
+from src.transformations.ohlcv import (
+    aggregate_interval_bars,
+    canonicalize_daily_candles,
+    simple_moving_average,
+)
 
-def calculate_ma(prices, window=15):
-    """Calculates simple moving average across a series of prices."""
-    if len(prices) < window:
-        return None
-    return round(sum(prices[-window:]) / window, 2)
 
 class TestTransformations(unittest.TestCase):
     def test_ohlcv_aggregation(self):
-        ticks = [
-            {"price": 180.0, "volume": 1000},
-            {"price": 182.5, "volume": 1500},
-            {"price": 179.5, "volume": 2000},
-            {"price": 181.0, "volume": 500}
+        bars = [
+            {"symbol": "AAPL", "date": "2026-10-09", "event_time": "2026-10-09T09:30:00",
+             "open": 180.0, "high": 180.0, "low": 180.0, "close": 180.0, "volume": 1000},
+            {"symbol": "AAPL", "date": "2026-10-09", "event_time": "2026-10-09T11:00:00",
+             "open": 182.5, "high": 182.5, "low": 182.5, "close": 182.5, "volume": 1500},
+            {"symbol": "AAPL", "date": "2026-10-09", "event_time": "2026-10-09T14:00:00",
+             "open": 179.5, "high": 179.5, "low": 179.5, "close": 179.5, "volume": 2000},
+            {"symbol": "AAPL", "date": "2026-10-09", "event_time": "2026-10-09T16:00:00",
+             "open": 181.0, "high": 181.0, "low": 181.0, "close": 181.0, "volume": 500},
         ]
-        candle = calculate_ohlcv(ticks)
-        self.assertEqual(candle["open"], 180.0)
-        self.assertEqual(candle["close"], 181.0)
-        self.assertEqual(candle["high"], 182.5)
-        self.assertEqual(candle["low"], 179.5)
-        self.assertEqual(candle["volume"], 5000)
-        self.assertEqual(candle["percent_change"], 0.56)
+        candle = aggregate_interval_bars(bars)["records"][0]
+        self.assertEqual(candle["daily_open"], 180.0)
+        self.assertEqual(candle["daily_close"], 181.0)
+        self.assertEqual(candle["daily_high"], 182.5)
+        self.assertEqual(candle["daily_low"], 179.5)
+        self.assertEqual(candle["daily_volume"], 5000)
+        self.assertEqual(candle["percent_change"], 0.5556)
+
+    def test_daily_candle_is_not_reaggregated(self):
+        candle = {
+            "symbol": "AAPL", "date": "2026-10-09",
+            "open": 181.5, "high": 182.5, "low": 180.8, "close": 181.1, "volume": 5500,
+        }
+        result = canonicalize_daily_candles([candle, dict(candle)])
+        row = result["records"][0]
+        self.assertEqual(row["daily_open"], 181.5)
+        self.assertEqual(row["daily_close"], 181.1)
+        self.assertEqual(row["daily_volume"], 5500)
 
     def test_moving_average_calculation(self):
-        prices = [10.0] * 15
-        ma15 = calculate_ma(prices, window=15)
-        self.assertEqual(ma15, 10.0)
+        self.assertEqual(simple_moving_average([10.0] * 15, window=15), 10.0)
+        self.assertIsNone(simple_moving_average([10.0] * 10, window=15))
 
-        # Insufficient data returns None, not an invented number
-        short_prices = [10.0] * 10
-        ma15_short = calculate_ma(short_prices, window=15)
-        self.assertIsNone(ma15_short)
 
 if __name__ == "__main__":
     unittest.main()

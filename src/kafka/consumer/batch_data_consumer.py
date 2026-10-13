@@ -143,8 +143,10 @@ def main():
                 idle_seconds = time.time() - last_message_time
                 if idle_seconds >= IDLE_TIMEOUT_SECONDS:
                     logger.info(
-                        f"No new messages for {idle_seconds:.0f}s — "
-                        f"assuming batch complete. Processed {messages_processed} message(s). Exiting."
+                        f"No new messages for {idle_seconds:.0f}s. "
+                        f"Processed {messages_processed} message(s). "
+                        "An empty poll on retry usually means offsets were already committed. "
+                        "It does not by itself prove the lake has the expected files."
                     )
                     break
                 continue
@@ -160,7 +162,10 @@ def main():
 
                 write_to_minio(minio_client, data, symbol, batch_date)
 
-                # Commit AFTER the MinIO write succeeds
+                # Commit AFTER the MinIO write succeeds.
+                # This is at-least-once delivery. If the write succeeds and
+                # this commit fails, the message is replayed. Silver and the
+                # gold MERGE collapse that replay on (symbol, date).
                 consumer.commit()
                 messages_processed += 1
                 last_message_time = time.time()

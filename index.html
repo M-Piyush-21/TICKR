@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TICKR | Financial Data Engineering Architecture & Analytics Platform</title>
-  <meta name="description" content="Production-grade stock market data engineering pipeline orchestrating AlphaVantage, Apache Kafka, Apache Spark, MinIO S3 Lake, Snowflake Data Warehouse, and Apache Airflow.">
+  <title>TICKR | Stock Market Data Engineering Prototype</title>
+  <meta name="description" content="TICKR is a stock-market data engineering prototype. The verified local path builds daily candles, checks completeness, and writes a run manifest. Kafka, Spark, Snowflake, and Airflow are in the repo and need their own runtime.">
   
   <!-- Modern Typography -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -25,26 +25,26 @@
       </div>
       <div class="brand-text">
         <h1>TICKR DE</h1>
-        <span>Financial Data Engineering Platform</span>
+        <span>Data engineering prototype</span>
       </div>
     </div>
 
     <!-- System Health Status Bar -->
     <div class="system-health-bar">
-      <div class="health-item"><span class="dot"></span> Kafka: Active</div>
-      <div class="health-item"><span class="dot"></span> MinIO Lake: S3 Synced</div>
-      <div class="health-item"><span class="dot"></span> Spark: 3.4 Cluster</div>
-      <div class="health-item"><span class="dot"></span> Snowflake: Upsert Ready</div>
-      <div class="health-item"><span class="dot"></span> Airflow: Scheduled</div>
+      <div class="health-item"><span class="dot"></span> <span id="healthBatch">NSE daily: waiting for a run</span></div>
+      <div class="health-item"><span class="dot idle"></span> Kafka: configured</div>
+      <div class="health-item"><span class="dot idle"></span> Spark: code only</div>
+      <div class="health-item"><span class="dot cloud"></span> Snowflake: needs credentials</div>
+      <div class="health-item"><span class="dot idle"></span> Airflow: DAG in repo</div>
     </div>
 
     <!-- Actions -->
     <div class="nav-actions">
       <button id="btnToggleStream" class="btn btn-secondary" onclick="toggleStreaming()">
-        <span>⚡</span> Stream Mode [OFF]
+        <span>⚡</span> Quote Snapshot Demo [OFF]
       </button>
       <button id="btnTriggerBatch" class="btn btn-primary" onclick="triggerBatchDAG()">
-        <span>▶</span> Trigger Airflow Batch Run
+        <span>▶</span> Simulate DAG Walkthrough
       </button>
     </div>
   </header>
@@ -65,8 +65,8 @@
       <button class="nav-tab-btn" id="pTab-screener" onclick="switchPlatformTab('screener')">
         <span>🔍</span> Stock Screener <span class="tab-badge" id="screenerCountBadge">10</span>
       </button>
-      <button class="nav-tab-btn" id="pTab-quality" onclick="switchPlatformTab('quality')">
-        <span>🛡️</span> Data Quality Dashboard <span class="tab-badge" id="dqPassRateBadge">97.8%</span>
+        <button class="nav-tab-btn" id="pTab-quality" onclick="switchPlatformTab('quality')">
+        <span>🛡️</span> Data Quality Dashboard <span class="tab-badge" id="dqPassRateBadge">—</span>
       </button>
       <button class="nav-tab-btn" id="pTab-alerts" onclick="switchPlatformTab('alerts')">
         <span>🔔</span> Market Activity Alerts <span class="tab-badge" id="alertsCountBadge">3</span>
@@ -90,11 +90,11 @@
           <div class="chart-header">
             <div>
               <div class="stock-headline">
-                <h2 id="heroSymbol">AAPL</h2>
-                <span class="stock-full-name" id="heroName">Apple Inc.</span>
+                <h2 id="heroSymbol">RELIANCE</h2>
+                <span class="stock-full-name" id="heroName">Reliance Industries</span>
               </div>
               <div class="stock-price-display">
-                <div class="current-price" id="heroPrice">$182.50</div>
+                <div class="current-price" id="heroPrice">₹—</div>
                 <div class="price-change-tag pos" id="heroChange">+1.24 (+0.68%)</div>
               </div>
             </div>
@@ -124,15 +124,15 @@
           <div class="metrics-strip">
             <div class="metric-item">
               <span class="metric-label">Open</span>
-              <span class="metric-value" id="statOpen">$181.67</span>
+              <span class="metric-value" id="statOpen">₹—</span>
             </div>
             <div class="metric-item">
               <span class="metric-label">High</span>
-              <span class="metric-value" id="statHigh">$182.29</span>
+              <span class="metric-value" id="statHigh">₹—</span>
             </div>
             <div class="metric-item">
               <span class="metric-label">Low</span>
-              <span class="metric-value" id="statLow">$181.01</span>
+              <span class="metric-value" id="statLow">₹—</span>
             </div>
             <div class="metric-item">
               <span class="metric-label">Volume</span>
@@ -140,14 +140,15 @@
             </div>
             <div class="metric-item">
               <span class="metric-label">15-Day MA</span>
-              <span class="metric-value" id="statMA15" style="color:#fb923c;">$180.95</span>
+              <span class="metric-value" id="statMA15" style="color:#fb923c;">₹—</span>
             </div>
             <div class="metric-item">
               <span class="metric-label">30-Day MA</span>
-              <span class="metric-value" id="statMA30" style="color:#a855f7;">$179.40</span>
+              <span class="metric-value" id="statMA30" style="color:#a855f7;">₹—</span>
             </div>
           </div>
 
+          <p class="demo-note" id="chartDataNote">Waiting for artifacts/nse_market.json. Until a live NSE run is loaded, this chart is a labeled browser fallback and is not a market price.</p>
           <!-- Canvas Chart -->
           <div class="chart-canvas-container">
             <canvas id="stockCanvas"></canvas>
@@ -331,12 +332,12 @@
             <h2 style="font-size:1.5rem; font-weight:800; display:flex; align-items:center; gap:0.5rem;">
               <span>🔍</span> Stock Market Screener &amp; Moving Average Engine
             </h2>
-            <p style="font-size:0.85rem; color:var(--text-muted); margin-top:0.35rem;">
-              Real-time multi-factor equities screening against price momentum, 15-day moving averages (MA15), and statistical volume surges.
+            <p id="screenerBlurb" style="font-size:0.85rem; color:var(--text-muted); margin-top:0.35rem;">
+              Multi-factor screen of the NSE cash universe: daily move, MA15, and volume versus a trailing baseline.
             </p>
           </div>
           <div style="font-size:0.78rem; font-family:var(--font-mono); color:var(--text-dim); background:rgba(15,23,42,0.8); padding:0.4rem 0.8rem; border-radius:6px; border:1px solid var(--border-color);">
-            Data Source: <span style="color:#38bdf8;">AlphaVantage (Real Ingestion / Seed Cache)</span>
+            Data Source: <span id="marketDataSourceLabel" style="color:#38bdf8;">Browser fallback until nse_market.json loads</span>
           </div>
         </div>
 
@@ -419,55 +420,63 @@
               <span>🛡️</span> Data Quality &amp; Pipeline Integrity Suite
             </h2>
             <p style="font-size:0.85rem; color:var(--text-muted); margin-top:0.35rem;">
-              Comprehensive automated data assertion suite running real validation checks across Bronze, Silver, and Gold layers. No hardcoded or fabricated statistics.
+              The KPI strip reads <code>artifacts/latest_run_manifest.json</code> from the verified local batch. The table under it audits the browser demonstration series and is labeled as such.
             </p>
           </div>
           <div style="display:flex; gap:0.75rem; align-items:center;">
             <button class="btn btn-secondary" onclick="runLiveQualityAudit()" style="padding:0.5rem 1rem; font-size:0.8rem;">
               <span>⚡</span> Re-Run Validation Checks
             </button>
-            <div id="dqAuditStatusBadge" style="font-size:0.75rem; font-family:var(--font-mono); color:#34d399; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); padding:0.45rem 0.8rem; border-radius:6px;">
-              Status: Live Validated
+            <div id="dqAuditStatusBadge" style="font-size:0.75rem; font-family:var(--font-mono); color:#fbbf24; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); padding:0.45rem 0.8rem; border-radius:6px;">
+              Browser series audit
             </div>
           </div>
         </div>
 
-        <!-- Real KPI Cards Grid -->
+        <div id="pipelineKpiPanel" class="pipeline-kpi-panel">
+          <div style="display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap; align-items:baseline;">
+            <h3 style="font-size:1rem; font-weight:700;">Pipeline run status</h3>
+            <span id="pipelineKpiSource" style="font-size:0.75rem; color:var(--text-dim); font-family:var(--font-mono);">Loading manifest…</span>
+          </div>
+          <div class="dq-kpi-grid" id="pipelineKpiGrid"></div>
+        </div>
+
+        <!-- Row-level checks on the browser demonstration series -->
         <div class="dq-kpi-grid">
           <div class="dq-kpi-card">
             <span class="dq-kpi-label">Records Processed</span>
-            <span class="dq-kpi-val" id="dqTotalRecords" style="color:#38bdf8;">2,540</span>
-            <span class="dq-kpi-footer">Across 10 tracked equities</span>
+            <span class="dq-kpi-val" id="dqTotalRecords" style="color:#38bdf8;">—</span>
+            <span class="dq-kpi-footer">Browser demonstration rows on screen</span>
           </div>
 
           <div class="dq-kpi-card">
             <span class="dq-kpi-label">Validation Pass Rate</span>
-            <span class="dq-kpi-val dq-badge-pass" id="dqPassRate">97.8%</span>
-            <span class="dq-kpi-footer">Calculated from 12,700 total assertions</span>
+            <span class="dq-kpi-val dq-badge-pass" id="dqPassRate">—</span>
+            <span class="dq-kpi-footer" id="dqPassRateFooter">Checks on the rows above, not a lake audit</span>
           </div>
 
           <div class="dq-kpi-card">
             <span class="dq-kpi-label">Missing / Null Records</span>
-            <span class="dq-kpi-val" id="dqMissingRecords" style="color:#fbbf24;">14</span>
-            <span class="dq-kpi-footer">Flagged in raw ingestion batch</span>
+            <span class="dq-kpi-val" id="dqMissingRecords" style="color:#fbbf24;">—</span>
+            <span class="dq-kpi-footer">Null or missing fields in the browser series</span>
           </div>
 
           <div class="dq-kpi-card">
             <span class="dq-kpi-label">Duplicate Records</span>
-            <span class="dq-kpi-val" id="dqDuplicateRecords" style="color:#fb7185;">3</span>
-            <span class="dq-kpi-footer">Primary Key collisions caught</span>
+            <span class="dq-kpi-val" id="dqDuplicateRecords" style="color:#fb7185;">—</span>
+            <span class="dq-kpi-footer">Duplicate (symbol, date) keys in the browser series</span>
           </div>
 
           <div class="dq-kpi-card">
             <span class="dq-kpi-label">Schema Validation Errors</span>
-            <span class="dq-kpi-val" id="dqSchemaErrors" style="color:#c084fc;">2</span>
-            <span class="dq-kpi-footer">Type &amp; date format anomalies</span>
+            <span class="dq-kpi-val" id="dqSchemaErrors" style="color:#c084fc;">—</span>
+            <span class="dq-kpi-footer">Type or range failures in the browser series</span>
           </div>
 
           <div class="dq-kpi-card">
             <span class="dq-kpi-label">Data Freshness &amp; SLA</span>
-            <span class="dq-kpi-val" id="dqFreshness" style="color:#34d399; font-size:1.25rem;">12m 40s ago</span>
-            <span class="dq-kpi-footer" id="dqSlaStatus">SLA: Healthy (&lt; 24h batch limit)</span>
+            <span class="dq-kpi-val" id="dqFreshness" style="color:#34d399; font-size:1.25rem;">—</span>
+            <span class="dq-kpi-footer" id="dqSlaStatus">Taken from the run manifest when one is present</span>
           </div>
         </div>
 
@@ -478,7 +487,7 @@
               Failed Checks &amp; Schema Integrity Violations Audit Log
             </h3>
             <span style="font-size:0.75rem; color:var(--text-dim); font-family:var(--font-mono);">
-              Showing active validation anomalies detected by <code>DataQualityValidator</code>
+              Browser-series checks only. Pipeline failures are in the run-status strip.
             </span>
           </div>
 
@@ -512,7 +521,7 @@
               <span>🔔</span> Market Activity &amp; Volatility Alert Engine
             </h2>
             <p style="font-size:0.85rem; color:var(--text-muted); margin-top:0.35rem;">
-              Deterministic statistical detection of price momentum breakouts, volatility swings, and unusual volume anomalies.
+              Configurable rule-based monitoring. Thresholds are heuristic triggers for unusual daily moves. They are not predictions, trading signals, or investment advice.
             </p>
           </div>
           <div style="font-size:0.75rem; font-family:var(--font-mono); color:var(--accent-cyan); background:rgba(56,189,248,0.1); border:1px solid rgba(56,189,248,0.25); padding:0.4rem 0.8rem; border-radius:6px;">
@@ -567,7 +576,7 @@
               Active Triggered Alerts (<span id="alertCountDisplay">0</span>)
             </h3>
             <span style="font-size:0.75rem; color:var(--text-dim); font-family:var(--font-mono);">
-              Evaluated against real-time market metrics
+              Evaluated on the browser demonstration series
             </span>
           </div>
 
@@ -583,10 +592,10 @@
       <section class="reality-matrix-panel glass">
         <div>
           <h2 style="font-size:1.5rem; font-weight:800; display:flex; align-items:center; gap:0.5rem;">
-            <span>🏗️</span> Production Architecture &amp; Implementation Reality Matrix
+            <span>🏗️</span> Architecture &amp; Implementation Reality Matrix
           </h2>
           <p style="font-size:0.85rem; color:var(--text-muted); margin-top:0.35rem;">
-            Honest engineering disclosure: documenting the intended enterprise architecture alongside what is fully implemented in this repository, what runs via local simulation, and what is planned for cloud deployment.
+            Path A is the NSE daily candle batch. Path B is a separate GLOBAL_QUOTE snapshot and is not merged into the daily book. The live command writes a JSON gold file. Kafka, Spark, Snowflake, and Airflow stay code, Compose services, or cloud-dependent.
           </p>
         </div>
 
@@ -596,21 +605,12 @@
             End-to-End Pipeline Data Flow
           </h3>
           <div style="background:rgba(5,7,13,0.8); border:1px solid var(--border-color); border-radius:10px; padding:1.25rem; font-family:var(--font-mono); font-size:0.82rem; line-height:1.8; overflow-x:auto;">
-            <div style="color:#38bdf8; font-weight:700;">[1. Alpha Vantage API]</div>
-            <div style="color:var(--text-dim); padding-left:1.5rem;">&darr; REST requests paced to 12s intervals (free-tier rate limitation compliance)</div>
-            <div style="color:#c084fc; font-weight:700;">[2. Python Ingestion Client (src/ingestion/kafka_producer.py)]</div>
-            <div style="color:var(--text-dim); padding-left:1.5rem;">&darr; Publishes serialized JSON payloads with symbol partition key</div>
-            <div style="color:#c084fc; font-weight:700;">[3. Apache Kafka 3.6 (Topics: stock-market-batch &amp; stock-market-realtime)]</div>
-            <div style="color:var(--text-dim); padding-left:1.5rem;">&darr; Buffers message stream; raw consumer dumps to storage</div>
-            <div style="color:#fb7185; font-weight:700;">[4. MinIO S3 Bronze Layer (raw/historical/year=YYYY/month=MM/day=DD/)]</div>
-            <div style="color:var(--text-dim); padding-left:1.5rem;">&darr; Raw immutable CSV objects stored with Hive-style folder partitioning</div>
-            <div style="color:#fb923c; font-weight:700;">[5. Apache Spark 3.4 / PySpark Transformations (src/processing/batch_processing.py)]</div>
-            <div style="color:var(--text-dim); padding-left:1.5rem;">&darr; Cleans schema, calculates OHLCV daily rollups, moving averages (MA15, MA30), deduplicates via Window</div>
-            <div style="color:#fb7185; font-weight:700;">[6. MinIO S3 Silver Layer (processed/historical/date=YYYY-MM-DD/symbol=TICKER/)]</div>
-            <div style="color:var(--text-dim); padding-left:1.5rem;">&darr; Snappy-compressed Parquet columnar partitions for high-throughput analytical reads</div>
-            <div style="color:#38bdf8; font-weight:700;">[7. Snowflake Gold Layer (DAILY_STOCK_METRICS via src/database/snowflake_loader.py)]</div>
-            <div style="color:var(--text-dim); padding-left:1.5rem;">&darr; Atomic MERGE INTO upsert prevents duplicates on retried pipeline runs</div>
-            <div style="color:#34d399; font-weight:700;">[8. TICKR Analytics Platform &amp; Quality Dashboard]</div>
+            <div style="color:#34d399; font-weight:700;">Path A — daily batch (verified locally on a fixture)</div>
+            <div style="color:var(--text-dim); padding-left:1.5rem;">TIME_SERIES_DAILY candle → simulated at-least-once buffer → local bronze JSON → canonical (symbol, date) row → local gold JSON</div>
+            <div style="color:#38bdf8; font-weight:700; margin-top:0.75rem;">Path A — same stages when Compose and cloud credentials are present</div>
+            <div style="color:var(--text-dim); padding-left:1.5rem;">Alpha Vantage (10 calls) → Kafka <code>stock-market-batch</code> → MinIO bronze → Spark canonical candles → Snowflake MERGE</div>
+            <div style="color:#c084fc; font-weight:700; margin-top:0.75rem;">Path B — quote snapshot (separate, quota-capped, not a tick feed)</div>
+            <div style="color:var(--text-dim); padding-left:1.5rem;">GLOBAL_QUOTE for 5 symbols, once per UTC day → Kafka <code>stock-market-realtime</code>. Key is (symbol, polled_at).</div>
           </div>
         </div>
 
@@ -621,10 +621,7 @@
               Apache Airflow's Orchestration Role
             </h4>
             <p style="font-size:0.82rem; color:var(--text-muted); line-height:1.55;">
-              Airflow orchestrates the DAG (<code>airflow/dags/stock_market_pipeline_dag.py</code>) on a daily schedule. It provides:
-              <br>&bull; <strong>Idempotency:</strong> Re-running a failed DAG run for any past date produces identical, conflict-free state in the warehouse.
-              <br>&bull; <strong>Retries &amp; Alerting:</strong> Exponential backoff handles transient AlphaVantage rate limits.
-              <br>&bull; <strong>Sensor Dependency:</strong> Ensures ingestion finishes before triggering PySpark transformations.
+              The DAG in <code>src/airflow/dags/stock_market_batch_dag.py</code> is the optional US Alpha Vantage compose path. Its session gate uses the NYSE calendar. The NSE live path is <code>python3 run_pipeline_local.py</code>.
             </p>
           </div>
 
@@ -633,7 +630,7 @@
               Docker &amp; Container Architecture
             </h4>
             <p style="font-size:0.82rem; color:var(--text-muted); line-height:1.55;">
-              <code>docker/docker-compose.yml</code> spins up a complete multi-service stack:
+              <code>docker-compose.yaml</code> defines the local stack:
               <br>&bull; <strong>Kafka + Zookeeper:</strong> Message broker with dedicated listeners.
               <br>&bull; <strong>MinIO:</strong> S3-compatible local bucket <code>stock-market-data</code> with console.
               <br>&bull; <strong>Spark Master &amp; Worker:</strong> Scalable compute with web UI at port 8080.
@@ -660,60 +657,67 @@
               </thead>
               <tbody>
                 <tr>
-                  <td><strong>Stock Screener Engine</strong></td>
+                  <td><strong>Local daily batch</strong></td>
+                  <td><span class="reality-badge reality-implemented">Verified local</span></td>
+                  <td><code>run_pipeline_local.py</code></td>
+                  <td>Python on the host</td>
+                  <td>Live NSE daily candles by default. <code>--fixture</code> stays offline.</td>
+                </tr>
+                <tr>
+                  <td><strong>Run manifest and KPIs</strong></td>
+                  <td><span class="reality-badge reality-implemented">Verified local</span></td>
+                  <td><code>artifacts/latest_run_manifest.json</code></td>
+                  <td>Written by the local batch; read by this page</td>
+                  <td>Shows freshness, completeness, and the last status.</td>
+                </tr>
+                <tr>
+                  <td><strong>Stock screener and charts</strong></td>
+                  <td><span class="reality-badge reality-simulated">Browser demonstration</span></td>
+                  <td><code>js/app.js</code></td>
+                  <td>Static page</td>
+                  <td>Reads artifacts/nse_market.json. Falls back to a labeled browser series.</td>
+                </tr>
+                <tr>
+                  <td><strong>Market alert rules</strong></td>
                   <td><span class="reality-badge reality-implemented">Implemented</span></td>
-                  <td><code>js/app.js</code>, <code>api/stocks.js</code></td>
-                  <td>Vercel Serverless / Browser</td>
-                  <td>Production-ready on Vercel deployment.</td>
+                  <td><code>src/data_quality/alerts.py</code></td>
+                  <td>Python and the browser</td>
+                  <td>Rule-based thresholds. Not a model and not advice.</td>
                 </tr>
                 <tr>
-                  <td><strong>Data Quality Audit Suite</strong></td>
-                  <td><span class="reality-badge reality-implemented">Implemented</span></td>
-                  <td><code>src/data_quality/validator.py</code>, <code>api/quality.js</code></td>
-                  <td>Python 3.12 Unit Tests &amp; API</td>
-                  <td>14 unit tests passing (100%). Runs in CI/CD pipeline.</td>
+                  <td><strong>Alpha Vantage clients</strong></td>
+                  <td><span class="reality-badge reality-planned">Code only</span></td>
+                  <td><code>src/kafka/producer/batch_data_producer.py</code></td>
+                  <td>Needs an API key and Kafka</td>
+                  <td>10 daily calls plus 5 quote snapshots and a retry reserve.</td>
                 </tr>
                 <tr>
-                  <td><strong>Market Alert Rules</strong></td>
-                  <td><span class="reality-badge reality-implemented">Implemented</span></td>
-                  <td><code>src/data_quality/alerts.py</code>, <code>api/alerts.js</code></td>
-                  <td>Python &amp; JavaScript API</td>
-                  <td>Configurable statistical thresholds with non-ML labeling.</td>
+                  <td><strong>Spark batch job</strong></td>
+                  <td><span class="reality-badge reality-planned">Code only</span></td>
+                  <td><code>src/spark/jobs/spark_batch_processor.py</code></td>
+                  <td>Spark 3.4 via Compose</td>
+                  <td>Collapses daily-candle replays. Does not sum their volume.</td>
                 </tr>
                 <tr>
-                  <td><strong>AlphaVantage Ingestion</strong></td>
-                  <td><span class="reality-badge reality-implemented">Implemented</span></td>
-                  <td><code>src/ingestion/kafka_producer.py</code></td>
-                  <td>Local Python / CLI</td>
-                  <td>Requires <code>ALPHA_VANTAGE_API_KEY</code> in <code>.env</code>.</td>
+                  <td><strong>Kafka and MinIO</strong></td>
+                  <td><span class="reality-badge reality-simulated">Configured</span></td>
+                  <td><code>docker-compose.yaml</code></td>
+                  <td>Docker Compose</td>
+                  <td>Not started by the local demo command.</td>
                 </tr>
                 <tr>
-                  <td><strong>PySpark Medallion Transformations</strong></td>
-                  <td><span class="reality-badge reality-implemented">Implemented</span></td>
-                  <td><code>src/processing/batch_processing.py</code></td>
-                  <td>Spark 3.4 Cluster / Local CLI</td>
-                  <td>Runs on Spark cluster or Databricks in enterprise cloud.</td>
+                  <td><strong>Snowflake MERGE</strong></td>
+                  <td><span class="reality-badge reality-planned">Cloud dependent</span></td>
+                  <td><code>src/snowflake/scripts/load_to_snowflake.py</code></td>
+                  <td>Snowflake account</td>
+                  <td>Refuses a stage that has conflicting (symbol, date) keys.</td>
                 </tr>
                 <tr>
-                  <td><strong>Kafka &amp; MinIO Infrastructure</strong></td>
-                  <td><span class="reality-badge reality-simulated">Configured &amp; Simulated</span></td>
-                  <td><code>docker/docker-compose.yml</code></td>
-                  <td>Local Docker Compose Stack</td>
-                  <td>Requires Docker Desktop daemon on host; simulated in web app.</td>
-                </tr>
-                <tr>
-                  <td><strong>Snowflake Warehouse Staging &amp; Upsert</strong></td>
-                  <td><span class="reality-badge reality-planned">Code Implemented / Cloud Planned</span></td>
-                  <td><code>src/database/snowflake_loader.py</code></td>
-                  <td>Snowflake Cloud Account</td>
-                  <td>Requires Snowflake account credentials (<code>SNOWFLAKE_USER</code>, etc.).</td>
-                </tr>
-                <tr>
-                  <td><strong>Apache Airflow Orchestration</strong></td>
-                  <td><span class="reality-badge reality-simulated">DAG Implemented / Simulated</span></td>
-                  <td><code>airflow/dags/stock_market_pipeline_dag.py</code></td>
-                  <td>Airflow Scheduler / Web UI</td>
-                  <td>Full DAG defined; execution terminal simulated for web demo.</td>
+                  <td><strong>Airflow DAG</strong></td>
+                  <td><span class="reality-badge reality-simulated">Code only</span></td>
+                  <td><code>src/airflow/dags/stock_market_batch_dag.py</code></td>
+                  <td>Airflow in Compose</td>
+                  <td>The button on this page only animates a walkthrough.</td>
                 </tr>
               </tbody>
             </table>

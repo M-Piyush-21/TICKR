@@ -39,7 +39,8 @@ class DataQualityValidator:
             # --- Rule 1: Symbol presence and validity ---
             total_checks += 1
             symbol = rec.get("symbol")
-            if symbol and isinstance(symbol, str) and 1 <= len(symbol) <= 6:
+            # NSE cash symbols are up to 10 characters (for example BHARTIARTL).
+            if symbol and isinstance(symbol, str) and 1 <= len(symbol) <= 20:
                 passed_checks += 1
             else:
                 failed_checks.append({
@@ -182,6 +183,22 @@ class DataQualityValidator:
                         "explanation": f"Record date '{date_val}' does not match target batch date '{expected_date}'."
                     })
 
+            # --- Rule 9: Source error payloads are not market rows ---
+            # Alpha Vantage can return HTTP 200 with an Information, Note, or
+            # Error Message body. That must not pass as a daily candle.
+            if any(key in rec for key in ("Information", "Note", "Error Message")):
+                total_checks += 1
+                failed_checks.append({
+                    "check_id": "CHK_09_SOURCE_PAYLOAD",
+                    "rule": "Source Error Payload",
+                    "column": "payload",
+                    "record_id": record_id,
+                    "observed": str({key: rec.get(key) for key in ("Information", "Note", "Error Message") if key in rec}),
+                    "expected": "A daily candle, not an API error document",
+                    "severity": "CRITICAL",
+                    "explanation": "The provider returned an error or quota message. This row is not market data."
+                })
+
         pass_rate = round((passed_checks / total_checks * 100), 2) if total_checks > 0 else 0.0
 
         latest_timestamp = None
@@ -203,6 +220,16 @@ class DataQualityValidator:
             "missing_critical_count": missing_critical_fields,
             "schema_failures_count": schema_failures,
             "latest_data_timestamp": latest_timestamp,
-            "processing_status": "VALIDATED" if len(failed_checks) == 0 else "WARNINGS_FOUND",
+            "processing_status": _processing_status(total_records, failed_checks),
             "failed_checks": failed_checks
         }
+
+
+def _processing_status(total_records: int, failed_checks: List[Dict[str, Any]]) -> str:
+    if total_records == 0:
+        return "FAILED_EMPTY"
+    if any(item.get("severity") == "CRITICAL" for item in failed_checks):
+        return "FAILED"
+    if failed_checks:
+        return "WARNINGS_FOUND"
+    return "VALIDATED"

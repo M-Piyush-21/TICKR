@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timedelta
 
 from airflow import DAG
@@ -10,9 +9,22 @@ default_args = {
     "depends_on_past": False,
     "email_on_failure": False,
     "email_on_retry": False,
+    # Downstream tasks can retry. The fetch task below overrides this.
+    # Its producer also refuses calls that would exceed the daily API budget.
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
+
+# This Compose DAG still fetches US symbols from Alpha Vantage.
+# The gate stays on the NYSE calendar so it matches that producer.
+# The NSE live path is run_pipeline_local.py, not this DAG.
+_GATE = (
+    'decision=$(python /opt/tickr/src/pipeline/session_gate.py --market nyse {{ ds }}); '
+    'if [ "$decision" = "SKIP" ]; then '
+    'echo "Non-trading session {{ ds }}. Task skipped. No API call was made."; '
+    'exit 0; '
+    'fi; '
+)
 
 # Define DAG
 dag = DAG(
@@ -28,7 +40,10 @@ dag = DAG(
 # ── Task 1: Fetch historical data from AlphaVantage and publish to Kafka ──────
 fetch_historical_data = BashOperator(
     task_id="fetch_historical_data",
-    bash_command="python /opt/airflow/dags/scripts/batch_data_producer.py {{ ds }}",
+    bash_command=_GATE + "python /opt/tickr/src/kafka/producer/batch_data_producer.py {{ ds }}",
+    # One Airflow retry is allowed. The producer skips symbols already marked
+    # successful today and stops when the ledger or the provider reports quota.
+    retries=1,
     dag=dag,
 )
 
@@ -38,7 +53,7 @@ fetch_historical_data = BashOperator(
 # Fixed to "consume_historical_data".
 consume_historical_data = BashOperator(
     task_id="consume_historical_data",
-    bash_command="python /opt/airflow/dags/scripts/batch_data_consumer.py {{ ds }}",
+    bash_command=_GATE + "python /opt/tickr/src/kafka/consumer/batch_data_consumer.py {{ ds }}",
     dag=dag,
 )
 
@@ -46,7 +61,7 @@ consume_historical_data = BashOperator(
 # ── Task 3: Spark batch processing — reads raw CSVs, writes Parquet to MinIO ──
 process_data = BashOperator(
     task_id="process_data",
-    bash_command="""
+    bash_command=_GATE + """
     docker exec stockmarket_datapipeline-spark-master-1 \
         spark-submit \
             --master spark://spark-master:7077 \
@@ -60,7 +75,7 @@ process_data = BashOperator(
 # ── Task 4: Incremental load from MinIO Parquet into Snowflake ────────────────
 load_to_snowflake = BashOperator(
     task_id="load_historical_to_snowflake",
-    bash_command="python /opt/airflow/dags/scripts/load_to_snowflake.py {{ ds }}",
+    bash_command=_GATE + "python /opt/tickr/src/snowflake/scripts/load_to_snowflake.py {{ ds }}",
     dag=dag,
 )
 

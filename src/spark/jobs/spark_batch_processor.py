@@ -107,41 +107,85 @@ def read_data_from_s3(spark, execution_date: str):
 
 
 def process_stock_data(df):
-    print("\n----- Processing Historical Stock Data")
+    """
+    Canonicalize TIME_SERIES_DAILY candles.
+
+    Each input row is already one daily OHLCV bar. This function does not
+    re-aggregate it as if it contained multiple trades, and it does not sum
+    volume across replays of the same (symbol, date). Exact replays collapse
+    to one row. Conflicting values for that key are left out of the result
+    and counted so the job can fail instead of picking an arbitrary row.
+
+    MA15 and MA30 are not computed here. A single execution-date partition
+    does not contain the earlier sessions those averages need. The verified
+    local runner computes them from the ordered daily-close history.
+    """
+    print("\n----- Processing daily candles")
 
     if df is None or df.count() == 0:
         print("No data to process")
-        return None
+        return None, 0
+
+    required = ["symbol", "date", "open", "high", "low", "close", "volume"]
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        print(f"Refusing to invent OHLCV. Missing columns: {missing}")
+        return None, 0
 
     try:
-        record_count = df.count()
-        print(f"Record count: {record_count}")
+        print(f"Record count before canonicalization: {df.count()}")
+        order_columns = [F.col("date").desc()]
+        if "batch_id" in df.columns:
+            order_columns.insert(0, F.col("batch_id").desc())
 
-        # Window over each (symbol, date) pair
-        window_day = Window.partitionBy("symbol", "date")
+        keyed = df.groupBy("symbol", "date").agg(
+            F.countDistinct(F.col("open").cast("double")).alias("_d_open"),
+            F.countDistinct(F.col("high").cast("double")).alias("_d_high"),
+            F.countDistinct(F.col("low").cast("double")).alias("_d_low"),
+            F.countDistinct(F.col("close").cast("double")).alias("_d_close"),
+            F.countDistinct(F.col("volume").cast("double")).alias("_d_vol"),
+        )
+        conflict_predicate = (
+            (F.col("_d_open") > 1)
+            | (F.col("_d_high") > 1)
+            | (F.col("_d_low") > 1)
+            | (F.col("_d_close") > 1)
+            | (F.col("_d_vol") > 1)
+        )
+        conflicts = keyed.filter(conflict_predicate)
+        conflict_count = conflicts.count()
+        if conflict_count:
+            print(f"Quarantine: {conflict_count} (symbol, date) key(s) conflict.")
+            conflicts.select("symbol", "date").show(20, truncate=False)
 
-        df = df.withColumn("daily_open",   F.first("open").over(window_day))
-        df = df.withColumn("daily_high",   F.max("high").over(window_day))
-        df = df.withColumn("daily_low",    F.min("low").over(window_day))
-        df = df.withColumn("daily_volume", F.sum("volume").over(window_day))
-        df = df.withColumn("daily_close",  F.last("close").over(window_day))
-        df = df.withColumn(
-            "daily_change",
-            (F.col("daily_close") - F.col("daily_open")) / F.col("daily_open") * 100
+        clean_keys = keyed.filter(~conflict_predicate).select("symbol", "date")
+        window = Window.partitionBy("symbol", "date").orderBy(*order_columns)
+        canonical = (
+            df.withColumn("_rn", F.row_number().over(window))
+            .filter(F.col("_rn") == 1)
+            .join(clean_keys, ["symbol", "date"], "inner")
+            .withColumn("daily_open", F.col("open").cast("double"))
+            .withColumn("daily_high", F.col("high").cast("double"))
+            .withColumn("daily_low", F.col("low").cast("double"))
+            .withColumn("daily_close", F.col("close").cast("double"))
+            .withColumn("daily_volume", F.col("volume").cast("double"))
+            .withColumn(
+                "daily_change",
+                (F.col("daily_close") - F.col("daily_open")) / F.col("daily_open") * 100,
+            )
         )
 
-        print("Sample of processed data:")
-        df.select(
+        print("Sample of canonical daily candles:")
+        canonical.select(
             "symbol", "date",
             "daily_open", "daily_high", "daily_low",
-            "daily_volume", "daily_close", "daily_change"
-        ).show(5)
-
-        return df
+            "daily_volume", "daily_close", "daily_change",
+        ).show(5, truncate=False)
+        return canonical, conflict_count
 
     except Exception as e:
         print(f"Error processing data: {str(e)}")
-        return None
+        return None, 0
 
 
 def write_to_s3(df, execution_date: str):
@@ -223,16 +267,20 @@ def main():
     try:
         df = read_data_from_s3(spark, execution_date)
 
-        if df is not None:
-            processed_df = process_stock_data(df)
+        if df is None:
+            print("Failed to read raw data from S3. Failing the task so a missing batch is visible.")
+            sys.exit(1)
 
-            if processed_df is not None:
-                write_to_s3(processed_df, execution_date)
-                print("Batch processing complete — data written to S3")
-            else:
-                print("Processing step returned no data")
-        else:
-            print("Failed to read raw data from S3")
+        processed_df, conflict_count = process_stock_data(df)
+        if processed_df is None:
+            print("Processing step returned no data")
+            sys.exit(1)
+        if conflict_count:
+            print("Conflicting daily candles were quarantined. Failing the task before the gold load.")
+            sys.exit(1)
+
+        write_to_s3(processed_df, execution_date)
+        print("Batch processing complete — canonical daily candles written to S3")
 
     except Exception as e:
         print(f"Unexpected error: {str(e)}")

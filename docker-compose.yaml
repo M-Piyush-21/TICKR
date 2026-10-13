@@ -18,6 +18,7 @@ x-airflow-common: &airflow-common
 
     # ---------------------------- AlphaVantage ------------------------------
     ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY}
+    PYTHONPATH: /opt/tickr
 
     # ---------------------------- MinIO -----------------------------------
     # MINIO_ENDPOINT: host:port form for the minio Python client
@@ -50,6 +51,7 @@ x-airflow-common: &airflow-common
       pyarrow
 
   volumes:
+    - ./:/opt/tickr
     - ./src/airflow/dags:/opt/airflow/dags
     - ./src/airflow/logs:/opt/airflow/logs
     - ./src/airflow/plugins:/opt/airflow/plugins

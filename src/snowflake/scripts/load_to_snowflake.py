@@ -18,6 +18,22 @@ import os
 import sys
 import traceback
 from datetime import datetime
+from pathlib import Path
+
+
+def _bootstrap() -> None:
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "src" / "warehouse" / "idempotent_load.py").exists():
+            entry = str(parent)
+            if entry not in sys.path:
+                sys.path.insert(0, entry)
+            return
+
+
+_bootstrap()
+
+from src.warehouse.idempotent_load import ConflictingMergeKey, prepare_merge_records
 
 import boto3
 import numpy as np
@@ -150,12 +166,24 @@ def read_processed_data(s3_client, execution_date: str) -> pd.DataFrame | None:
     df_all = pd.concat(dfs, ignore_index=True)
     logger.info(f"Loaded {len(df_all)} total row(s) from {len(dfs)} file(s)")
 
+    # Identical replays collapse. Conflicting (symbol, date) keys abort the
+    # load so MERGE cannot apply an arbitrary version.
+    try:
+        prepared = prepare_merge_records(df_all.to_dict(orient="records"))
+    except ConflictingMergeKey as exc:
+        logger.error(str(exc))
+        return None
+    df_all = pd.DataFrame(prepared["records"])
+    logger.info(
+        "Stage key check passed: %s canonical row(s), %s identical replay(s) collapsed.",
+        len(df_all),
+        prepared["replays_collapsed"],
+    )
+
     # -------------------------- Type coercion -----------------------------
     df_all["date"]         = pd.to_datetime(df_all["date"]).dt.date
-    df_all["last_updated"] = datetime.now()
-
-    # De-duplicate: keep the last occurrence per (symbol, date)
-    df_all = df_all.drop_duplicates(subset=["symbol", "date"], keep="last")
+    if "last_updated" not in df_all.columns:
+        df_all["last_updated"] = datetime.now()
 
     # -------------------------- Column validation --------------------------
     missing = [c for c in REQUIRED_COLUMNS if c not in df_all.columns]
@@ -369,10 +397,13 @@ def main():
         create_snowflake_table(conn)
         df = read_processed_data(s3_client, execution_date)
 
-        if df is not None:
-            incremental_load_to_snowflake(conn, df)
-        else:
-            logger.info("No processed data found — Snowflake table unchanged")
+        if df is None:
+            logger.error(
+                "No unique processed rows to load. Failing the task so an empty "
+                "or conflicting batch is not reported as a successful warehouse sync."
+            )
+            sys.exit(1)
+        incremental_load_to_snowflake(conn, df)
 
     except Exception as e:
         logger.error(f"Fatal error: {e}")

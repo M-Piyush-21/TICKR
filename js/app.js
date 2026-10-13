@@ -3,19 +3,26 @@
  * Interactive Stock Market Data Pipeline Frontend & Architecture Visualizer
  */
 
-// 10 Monitored Equities
+// NSE cash universe. Live candles replace these when artifacts/nse_market.json loads.
+// basePrice is only the fallback generator's starting level, not a market price.
 const STOCKS_DATA = {
-  AAPL:  { name: "Apple Inc.", sector: "Consumer Electronics", basePrice: 182.50, vol: "52.4M" },
-  MSFT:  { name: "Microsoft Corporation", sector: "Software & Cloud", basePrice: 415.20, vol: "24.1M" },
-  GOOGL: { name: "Alphabet Inc.", sector: "Internet Services", basePrice: 155.80, vol: "28.9M" },
-  AMZN:  { name: "Amazon.com, Inc.", sector: "E-Commerce & Cloud", basePrice: 178.90, vol: "34.5M" },
-  META:  { name: "Meta Platforms, Inc.", sector: "Social Media & AI", basePrice: 505.40, vol: "16.8M" },
-  TSLA:  { name: "Tesla, Inc.", sector: "Automotive & Clean Energy", basePrice: 175.30, vol: "68.2M" },
-  NVDA:  { name: "NVIDIA Corporation", sector: "Semiconductors & AI", basePrice: 890.60, vol: "48.7M" },
-  INTC:  { name: "Intel Corporation", sector: "Semiconductors", basePrice: 31.40, vol: "41.2M" },
-  JPM:   { name: "JPMorgan Chase & Co.", sector: "Banking & Financials", basePrice: 198.70, vol: "11.6M" },
-  V:     { name: "Visa Inc.", sector: "Payment Technology", basePrice: 282.10, vol: "8.4M" }
+  RELIANCE:   { name: "Reliance Industries", sector: "Energy", basePrice: 1400, vol: "—" },
+  TCS:        { name: "Tata Consultancy Services", sector: "Information Technology", basePrice: 3800, vol: "—" },
+  HDFCBANK:   { name: "HDFC Bank", sector: "Banking", basePrice: 1700, vol: "—" },
+  INFY:       { name: "Infosys", sector: "Information Technology", basePrice: 1800, vol: "—" },
+  ICICIBANK:  { name: "ICICI Bank", sector: "Banking", basePrice: 1300, vol: "—" },
+  SBIN:       { name: "State Bank of India", sector: "Banking", basePrice: 800, vol: "—" },
+  BHARTIARTL: { name: "Bharti Airtel", sector: "Telecom", basePrice: 1600, vol: "—" },
+  ITC:        { name: "ITC", sector: "FMCG", basePrice: 450, vol: "—" },
+  LT:         { name: "Larsen & Toubro", sector: "Infrastructure", basePrice: 3600, vol: "—" },
+  HINDUNILVR: { name: "Hindustan Unilever", sector: "FMCG", basePrice: 2500, vol: "—" }
 };
+
+function inr(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return "₹" + n.toFixed(2);
+}
 
 
 // Component Deep-Dive Specs
@@ -24,7 +31,7 @@ const COMPONENT_SPECS = {
     name: "AlphaVantage Market API",
     tag: "Data Ingestion Source",
     badgeClass: "node-alpha",
-    role: "Provides official daily financial candles and streaming quote endpoints for the 10 monitored US equities.",
+    role: "Optional US compose client. The live NSE path does not use this node; it reads Yahoo chart daily candles for SYMBOL.NS.",
     problemSolved: "Simulates an authentic financial data provider with strict free-tier rate limitations (5 calls/min, 25 calls/day) rather than using unstable web scrapers.",
     decision: "Deliberate 12-second pacing and compact output size (last 100 trading days) guarantees reliable operation within API limits.",
     tech: "REST API, Requests, JSON",
@@ -40,7 +47,7 @@ const COMPONENT_SPECS = {
     tag: "Distributed Message Broker",
     badgeClass: "node-kafka",
     role: "Decouples data producers from downstream storage and compute, buffering messages across two independent topics.",
-    problemSolved: "Eliminates tight coupling. If downstream storage fails or experiences network latency, messages remain securely buffered in Kafka without dropping market data.",
+    problemSolved: "Decouples the API client from storage. Manual commit-after-write is at-least-once: a commit failure after a successful write can replay, and the gold key collapses that replay.",
     decision: "Two separate topics ('stock-market-batch' and 'stock-market-realtime') allow independent consumer retention and scaling.",
     tech: "confluent-kafka, Zookeeper, Murmur2 Partitioning",
     snippet: `producer = Producer({
@@ -68,15 +75,12 @@ producer.flush()`
     name: "Apache Spark 3.4",
     tag: "Distributed Compute Engine",
     badgeClass: "node-spark",
-    role: "Executes both PySpark batch transformations (daily OHLCV) and Structured Streaming sliding window aggregations.",
-    problemSolved: "Pandas processes data on a single CPU thread and crashes when datasets exceed RAM. Spark partitions work across cores and clusters.",
+    role: "Canonicalizes daily candles for one execution date. It does not re-sum a daily bar, and it does not invent MA15 or MA30 from a single partition.",
+    problemSolved: "Keeps the Spark job on the same grain as TIME_SERIES_DAILY. Scale beyond this 10-symbol demo is not measured in this repository.",
     decision: "Single processing engine for both batch and streaming avoids managing multiple compute frameworks.",
     tech: "PySpark, Spark SQL Window Functions, Hadoop-AWS S3A",
-    snippet: `window_day = Window.partitionBy("symbol", "date")
-df = df.withColumn("daily_open", F.first("open").over(window_day))
-       .withColumn("daily_high", F.max("high").over(window_day))
-       .withColumn("daily_low",  F.min("low").over(window_day))
-       .withColumn("daily_close", F.last("close").over(window_day))`
+    snippet: `# Daily candle: collapse exact replays, do not sum volume.
+# Conflicting (symbol, date) values are left out and fail the task.`
   },
   snow: {
     name: "Snowflake Cloud Warehouse",
@@ -109,7 +113,7 @@ cursor.execute("""
 
 // Global App State
 const state = {
-  selectedSymbol: "AAPL",
+  selectedSymbol: "RELIANCE",
   chartType: "candles", // 'candles' or 'line'
   timeframe: "30D",
   showMA15: true,
@@ -197,9 +201,7 @@ function initStockData() {
   state.warehouseRecords = [];
   Object.keys(STOCKS_DATA).forEach(sym => {
     const meta = STOCKS_DATA[sym];
-    // INTC has 10 sessions to demonstrate genuine handling of missing metrics without inventing values
-    const candleCount = (sym === "INTC") ? 10 : 45;
-    const candles = generateCandles(meta.basePrice, candleCount);
+    const candles = generateCandles(meta.basePrice, 45);
     const latest = candles[candles.length - 1];
 
     // Trailing 15-day average volume calculation
@@ -212,7 +214,7 @@ function initStockData() {
       symbol: sym,
       candles,
       latest,
-      dataSource: "AlphaVantage (Real Ingestion / Seed Cache)"
+      dataSource: "Browser fallback series"
     };
 
     state.warehouseRecords.push({
@@ -248,7 +250,7 @@ function renderTickerRibbon() {
 
     card.innerHTML = `
       <div class="ticker-symbol">${sym}</div>
-      <div class="ticker-price">$${stock.latest.close.toFixed(2)}</div>
+      <div class="ticker-price">${inr(stock.latest.close)}</div>
       <div class="ticker-change ${isPos ? 'pos' : 'neg'}">
         ${isPos ? '+' : ''}${stock.latest.percentChange.toFixed(2)}%
       </div>
@@ -275,18 +277,18 @@ function updateStockHero() {
 
   document.getElementById("heroSymbol").textContent = stock.symbol;
   document.getElementById("heroName").textContent = stock.name;
-  document.getElementById("heroPrice").textContent = `$${latest.close.toFixed(2)}`;
+  document.getElementById("heroPrice").textContent = `${inr(latest.close)}`;
 
   const changeTag = document.getElementById("heroChange");
   changeTag.className = `price-change-tag ${isPos ? 'pos' : 'neg'}`;
-  changeTag.textContent = `${isPos ? '+' : ''}$${latest.change.toFixed(2)} (${isPos ? '+' : ''}${latest.percentChange.toFixed(2)}%)`;
+  changeTag.textContent = `${isPos ? '+' : ''}${inr(latest.change)} (${isPos ? '+' : ''}${latest.percentChange.toFixed(2)}%)`;
 
-  document.getElementById("statOpen").textContent = `$${latest.open.toFixed(2)}`;
-  document.getElementById("statHigh").textContent = `$${latest.high.toFixed(2)}`;
-  document.getElementById("statLow").textContent = `$${latest.low.toFixed(2)}`;
+  document.getElementById("statOpen").textContent = `${inr(latest.open)}`;
+  document.getElementById("statHigh").textContent = `${inr(latest.high)}`;
+  document.getElementById("statLow").textContent = `${inr(latest.low)}`;
   document.getElementById("statVol").textContent = Number(latest.volume).toLocaleString();
-  document.getElementById("statMA15").textContent = latest.ma15 !== null ? `$${latest.ma15.toFixed(2)}` : "N/A (Insufficient Data)";
-  document.getElementById("statMA30").textContent = latest.ma30 !== null ? `$${latest.ma30.toFixed(2)}` : "N/A (Insufficient Data)";
+  document.getElementById("statMA15").textContent = latest.ma15 !== null ? `${inr(latest.ma15)}` : "N/A (Insufficient Data)";
+  document.getElementById("statMA30").textContent = latest.ma30 !== null ? `${inr(latest.ma30)}` : "N/A (Insufficient Data)";
 }
 
 // HTML5 Canvas Chart Renderer
@@ -373,7 +375,7 @@ function drawChart() {
     ctx.lineTo(width - paddingRight, y);
     ctx.stroke();
 
-    ctx.fillText(`$${p.toFixed(2)}`, width - paddingRight + 6, y + 3);
+    ctx.fillText(`${inr(p)}`, width - paddingRight + 6, y + 3);
   }
 
   // Draw Volume Histogram at bottom
@@ -491,7 +493,7 @@ function drawChart() {
 function triggerBatchDAG() {
   const btn = document.getElementById("btnTriggerBatch");
   btn.disabled = true;
-  btn.innerHTML = `<span>⏳</span> Running DAG...`;
+  btn.innerHTML = `<span>⏳</span> Playing walkthrough...`;
 
   const terminal = document.getElementById("terminalBody");
   terminal.innerHTML = "";
@@ -505,7 +507,8 @@ function triggerBatchDAG() {
     terminal.scrollTop = terminal.scrollHeight;
   }
 
-  addLog("🚀 [Airflow] Triggering DAG: stock_market_batch_pipeline", "highlight");
+  addLog("SIMULATED WALKTHROUGH. This button does not call Airflow, Kafka, or Alpha Vantage.", "highlight");
+  addLog("The verified command is: python3 run_pipeline_local.py --execution-date 2026-10-13", "info");
 
   const nodes = {
     alpha: document.getElementById("node-alpha"),
@@ -519,8 +522,8 @@ function triggerBatchDAG() {
   // Task 1: Fetch
   setTimeout(() => {
     nodes.alpha.classList.add("highlight");
-    addLog("Task 1/5: fetch_historical_data (AlphaVantage TIME_SERIES_DAILY)...", "info");
-    addLog("✓ Polled 10 equities: AAPL, MSFT, GOOGL, AMZN, META, TSLA, NVDA, INTC, JPM, V", "success");
+    addLog("Illustrated task 1/5: fetch_historical_data would request one TIME_SERIES_DAILY candle per symbol.", "info");
+    addLog("Illustration only. The live client is capped at 10 batch calls, 5 quote snapshots, and 5 retries.", "success");
   }, 500);
 
   // Task 2: Kafka & S3 Raw
@@ -528,8 +531,8 @@ function triggerBatchDAG() {
     nodes.alpha.classList.remove("highlight");
     nodes.kafka.classList.add("highlight");
     nodes.minio.classList.add("highlight");
-    addLog("Task 2/5: consume_historical_data -> Publishing to Kafka topic 'stock-market-batch'...", "info");
-    addLog("✓ Ingested 10 messages into MinIO: s3a://stock-market-data/raw/historical/year=2026/...", "success");
+    addLog("Illustrated task 2/5: consume would commit Kafka offsets only after the bronze write.", "info");
+    addLog("Illustration only. The local demo writes JSON under data/lake and does not start Kafka.", "success");
   }, 1600);
 
   // Task 3: Spark Batch
@@ -537,28 +540,28 @@ function triggerBatchDAG() {
     nodes.kafka.classList.remove("highlight");
     nodes.minio.classList.remove("highlight");
     nodes.spark.classList.add("highlight");
-    addLog("Task 3/5: process_data -> Submitting PySpark Batch Job to spark://spark-master:7077...", "info");
-    addLog("✓ Spark computed daily OHLCV, MA15, MA30 and partitioned by symbol into MinIO processed Parquet", "success");
+    addLog("Illustrated task 3/5: Spark would keep one daily candle per (symbol, date) and would not sum replayed volume.", "info");
+    addLog("Illustration only. MA15 and MA30 in the local fixture come from ordered daily closes.", "success");
   }, 2900);
 
   // Task 4: Snowflake MERGE
   setTimeout(() => {
     nodes.spark.classList.remove("highlight");
     nodes.snow.classList.add("highlight");
-    addLog("Task 4/5: load_historical_to_snowflake -> Connecting to Snowflake (STOCKMARKETBATCH)...", "info");
-    addLog("✓ Executed MERGE INTO DAILY_STOCK_METRICS (10 records upserted without duplication)", "success");
+    addLog("Illustrated task 4/5: a warehouse MERGE updates the same (symbol, date) instead of inserting another row.", "info");
+    addLog("Illustration only. This demo's gold file is data/warehouse/DAILY_STOCK_METRICS.json.", "success");
   }, 4200);
 
   // Task 5: Complete
   setTimeout(() => {
     nodes.snow.classList.remove("highlight");
     nodes.air.classList.add("highlight");
-    addLog("Task 5/5: process_complete -> Batch DAG execution marked SUCCESS.", "highlight");
+    addLog("Walkthrough finished. Check the Data Quality tab for the last real local-batch manifest.", "highlight");
 
     setTimeout(() => nodes.air.classList.remove("highlight"), 1500);
 
     btn.disabled = false;
-    btn.innerHTML = `<span>▶</span> Trigger Airflow Batch Run`;
+    btn.innerHTML = `<span>▶</span> Simulate DAG Walkthrough`;
 
     initStockData();
     renderTickerRibbon();
@@ -575,7 +578,7 @@ function toggleStreaming() {
 
   if (state.streamingActive) {
     btn.className = "btn btn-primary";
-    btn.innerHTML = `<span class="dot" style="background:#4ade80;"></span> Streaming LIVE (Kafka)`;
+    btn.innerHTML = `<span class="dot" style="background:#4ade80;"></span> Quote Snapshot Demo [ON]`;
     
     state.streamIntervalId = setInterval(() => {
       Object.keys(state.stocks).forEach(sym => {
@@ -601,7 +604,7 @@ function toggleStreaming() {
 
   } else {
     btn.className = "btn btn-secondary";
-    btn.innerHTML = `<span>⚡</span> Stream Mode [OFF]`;
+    btn.innerHTML = `<span>⚡</span> Quote Snapshot Demo [OFF]`;
     clearInterval(state.streamIntervalId);
   }
 }
@@ -667,13 +670,13 @@ function renderExplorerTable() {
         <tr>
           <td><strong style="color:var(--accent-cyan);">${r.symbol}</strong></td>
           <td>${r.date}</td>
-          <td>$${r.daily_open.toFixed(2)}</td>
-          <td>$${r.daily_high.toFixed(2)}</td>
-          <td>$${r.daily_low.toFixed(2)}</td>
-          <td>$${r.daily_close.toFixed(2)}</td>
+          <td>${inr(r.daily_open)}</td>
+          <td>${inr(r.daily_high)}</td>
+          <td>${inr(r.daily_low)}</td>
+          <td>${inr(r.daily_close)}</td>
           <td>${Number(r.daily_volume).toLocaleString()}</td>
-          <td>${r.ma_15 !== null && r.ma_15 !== undefined ? `$${r.ma_15.toFixed(2)}` : '<span style="color:var(--text-dim); font-size:0.75rem;">N/A (Insufficient Data)</span>'}</td>
-          <td>${r.ma_30 !== null && r.ma_30 !== undefined ? `$${r.ma_30.toFixed(2)}` : '<span style="color:var(--text-dim); font-size:0.75rem;">N/A (Insufficient Data)</span>'}</td>
+          <td>${r.ma_15 !== null && r.ma_15 !== undefined ? `${inr(r.ma_15)}` : '<span style="color:var(--text-dim); font-size:0.75rem;">N/A (Insufficient Data)</span>'}</td>
+          <td>${r.ma_30 !== null && r.ma_30 !== undefined ? `${inr(r.ma_30)}` : '<span style="color:var(--text-dim); font-size:0.75rem;">N/A (Insufficient Data)</span>'}</td>
           <td><span class="badge-tag badge-green">UPSERTED</span></td>
         </tr>
       `;
@@ -683,14 +686,11 @@ function renderExplorerTable() {
     container.innerHTML = html;
 
   } else if (state.activeTab === "lake") {
-    const lakeFiles = [
-      { path: "s3a://stock-market-data/raw/historical/year=2026/month=10/day=09/AAPL_145301.csv", type: "Raw CSV", size: "1.4 KB", format: "CSV" },
-      { path: "s3a://stock-market-data/raw/historical/year=2026/month=10/day=09/NVDA_145301.csv", type: "Raw CSV", size: "1.5 KB", format: "CSV" },
-      { path: "s3a://stock-market-data/raw/historical/year=2026/month=10/day=09/MSFT_145301.csv", type: "Raw CSV", size: "1.4 KB", format: "CSV" },
-      { path: "s3a://stock-market-data/processed/historical/date=2026-10-09/symbol=AAPL/part-00000.parquet", type: "Processed", size: "4.8 KB", format: "Snappy Parquet" },
-      { path: "s3a://stock-market-data/processed/historical/date=2026-10-09/symbol=NVDA/part-00000.parquet", type: "Processed", size: "4.9 KB", format: "Snappy Parquet" },
-      { path: "s3a://stock-market-data/processed/historical/date=2026-10-09/symbol=TSLA/part-00000.parquet", type: "Processed", size: "4.7 KB", format: "Snappy Parquet" }
-    ];
+    const lakeSymbols = Object.keys(state.stocks).slice(0, 3);
+    const lakeFiles = lakeSymbols.flatMap(sym => [
+      { path: `data/lake/raw/historical/year=2026/month=10/day=13/${sym}.json`, type: "Raw JSON", size: "session file", format: "JSON" },
+      { path: `data/lake/processed/historical/date=2026-10-13/symbol=${sym}/part-00000.json`, type: "Processed", size: "session file", format: "JSON" }
+    ]);
 
     let html = `
       <table class="data-table">
@@ -735,29 +735,22 @@ function renderExplorerTable() {
           </tr>
         </thead>
         <tbody>
-          <tr>
+          ${Object.keys(state.stocks).slice(0, 2).map((sym, index) => {
+            const latest = state.stocks[sym].latest;
+            return `<tr>
             <td><span class="badge-tag badge-purple">stock-market-batch</span></td>
-            <td>0</td>
-            <td>1042</td>
-            <td>AAPL</td>
-            <td>{"symbol":"AAPL","daily_close":181.87,"volume":52410200}</td>
-            <td>Just now</td>
-          </tr>
-          <tr>
-            <td><span class="badge-tag badge-purple">stock-market-batch</span></td>
-            <td>1</td>
-            <td>1043</td>
-            <td>NVDA</td>
-            <td>{"symbol":"NVDA","daily_close":906.05,"volume":37433186}</td>
-            <td>Just now</td>
-          </tr>
+            <td>${index}</td>
+            <td>—</td>
+            <td>${sym}</td>
+            <td>{"symbol":"${sym}","daily_close":${latest.close},"volume":${latest.volume}}</td>
+            <td>${latest.date}</td>
+          </tr>`;
+          }).join("")}
           <tr>
             <td><span class="badge-tag badge-blue">stock-market-realtime</span></td>
             <td>0</td>
-            <td>4820</td>
-            <td>MSFT</td>
-            <td>{"symbol":"MSFT","price":417.16,"change":3.37}</td>
-            <td>2s ago</td>
+            <td>—</td>
+            <td colspan="3">Quote snapshots are not merged into the NSE daily book.</td>
           </tr>
         </tbody>
       </table>
@@ -880,7 +873,7 @@ function renderScreenerTable() {
     const isPos = latest.change >= 0;
     const isSurge = latest.volume > (latest.avgVolume15 * 1.25);
     
-    let maDisplay = `<span style="color:#fb923c;">$${latest.ma15?.toFixed(2)}</span>`;
+    let maDisplay = `<span style="color:#fb923c;">${inr(latest.ma15)}</span>`;
     let signalBadge = `<span class="badge-tag badge-blue">Neutral</span>`;
 
     if (latest.ma15 === null) {
@@ -905,9 +898,9 @@ function renderScreenerTable() {
           <div style="font-weight:600;">${s.name}</div>
           <div style="font-size:0.72rem; color:var(--text-dim);">${s.sector}</div>
         </td>
-        <td style="font-weight:700;">$${latest.close.toFixed(2)}</td>
+        <td style="font-weight:700;">${inr(latest.close)}</td>
         <td style="color:${isPos ? '#34d399' : '#fb7185'}; font-weight:700;">
-          ${isPos ? '+' : ''}${latest.change.toFixed(2)} (${isPos ? '+' : ''}${latest.percentChange.toFixed(2)}%)
+          ${isPos ? '+' : ''}${inr(latest.change)} (${isPos ? '+' : ''}${latest.percentChange.toFixed(2)}%)
         </td>
         <td>
           <div>${Number(latest.volume).toLocaleString()}</div>
@@ -915,7 +908,7 @@ function renderScreenerTable() {
         </td>
         <td>${maDisplay}</td>
         <td>${signalBadge}</td>
-        <td><span class="badge-tag badge-blue">${s.dataSource || "AlphaVantage"}</span></td>
+        <td><span class="badge-tag badge-blue">${s.dataSource || "Browser fallback series"}</span></td>
       </tr>
     `;
   });
@@ -1003,7 +996,7 @@ function executeDataQualityAudit() {
         severity: "CRITICAL",
         ruleId: "ASSERT_NON_NEGATIVE_PRICE",
         entity: row.symbol,
-        violation: `Invalid daily_close value ($${row.daily_close}) <= 0`,
+        violation: `Invalid daily_close value (${inr(row.daily_close)}) <= 0`,
         remediation: "Rejected from Gold warehouse; ingestion alert dispatched",
         timestamp: new Date().toLocaleTimeString()
       });
@@ -1016,7 +1009,7 @@ function executeDataQualityAudit() {
         severity: "CRITICAL",
         ruleId: "ASSERT_HIGH_GE_LOW",
         entity: row.symbol,
-        violation: `Spread inversion: High ($${row.daily_high}) < Low ($${row.daily_low})`,
+        violation: `Spread inversion: High (${inr(row.daily_high)}) < Low (${inr(row.daily_low)})`,
         remediation: "Quarantined in MinIO dead-letter bucket; flagged for provider re-fetch",
         timestamp: new Date().toLocaleTimeString()
       });
@@ -1036,52 +1029,18 @@ function executeDataQualityAudit() {
     }
   });
 
-  // Include real assertions from batch ingestion audit log to demonstrate failed checks handling
-  const auditFixtures = [
-    {
-      severity: "CRITICAL",
-      ruleId: "ASSERT_PK_UNIQUE",
-      entity: "NVDA (Batch 2026-10-09)",
-      violation: "Redundant quote row published to Kafka topic 'stock-market-batch' partition 1 at offset 1043",
-      remediation: "Handled by Snowflake MERGE INTO idempotency statement; duplicate prevented in Gold table",
-      timestamp: "Today, 14:52:10"
-    },
-    {
-      severity: "WARNING",
-      ruleId: "ASSERT_SCHEMA_TYPE",
-      entity: "TSLA::volume",
-      violation: "String-formatted integer ('68200000') received instead of BigInt in raw Bronze CSV",
-      remediation: "PySpark schema casting applied: F.col('volume').cast(LongType()); passed with coercion",
-      timestamp: "Today, 14:51:44"
-    },
-    {
-      severity: "WARNING",
-      ruleId: "ASSERT_HIGH_GE_LOW",
-      entity: "INTC (Raw Staging)",
-      violation: "Micro-candle tick High ($31.10) registered below Low ($31.25) during market open spread spike",
-      remediation: "Swapped bounds via LEAST/GREATEST PySpark transformation; audit metric incremented",
-      timestamp: "Today, 14:48:02"
-    }
-  ];
-
-  auditFixtures.forEach(f => {
-    failures.push(f);
-    if (f.ruleId === "ASSERT_PK_UNIQUE") duplicateCount++;
-    if (f.ruleId === "ASSERT_SCHEMA_TYPE") schemaErrorCount++;
-    if (f.ruleId === "ASSERT_NOT_NULL") missingValueCount++;
-  });
-  totalAssertions += 450; // Total assertions across full historical dataset (10 equities * 45 days)
-
-  const passRate = (((totalAssertions - failures.length) / totalAssertions) * 100).toFixed(1);
+  const passRate = totalAssertions === 0
+    ? 0
+    : Number((((totalAssertions - failures.length) / totalAssertions) * 100).toFixed(1));
 
   return {
-    totalRecords: records.length * 45, // Total historical records in pipeline lake
+    scope: "browser_demonstration_series",
+    totalRecords: records.length,
     totalAssertions,
-    passRate: Number(passRate),
+    passRate,
     missingRecords: missingValueCount,
     duplicateRecords: duplicateCount,
     schemaErrors: schemaErrorCount,
-    freshness: "12m 40s ago",
     failures
   };
 }
@@ -1105,7 +1064,18 @@ function renderDataQualityDashboard() {
   if (missingEl) missingEl.textContent = audit.missingRecords;
   if (dupEl) dupEl.textContent = audit.duplicateRecords;
   if (schemaEl) schemaEl.textContent = audit.schemaErrors;
-  if (freshnessEl) freshnessEl.textContent = audit.freshness;
+  if (freshnessEl) {
+    const manifest = state.pipelineManifest;
+    freshnessEl.textContent = manifest
+      ? manifest.execution_date
+      : "No manifest";
+  }
+  const sla = document.getElementById("dqSlaStatus");
+  if (sla) {
+    sla.textContent = state.pipelineManifest
+      ? `Last local run ${state.pipelineManifest.status} · ${state.pipelineManifest.finished_at}`
+      : "Run python3 run_pipeline_local.py to write a manifest";
+  }
 
   if (tbody) {
     if (audit.failures.length === 0) {
@@ -1140,17 +1110,94 @@ function renderDataQualityDashboard() {
 function runLiveQualityAudit() {
   const badge = document.getElementById("dqAuditStatusBadge");
   if (badge) {
-    badge.textContent = "Status: Re-Evaluating Assertions...";
+    badge.textContent = "Re-checking browser series…";
     badge.style.color = "#fbbf24";
   }
 
   setTimeout(() => {
     renderDataQualityDashboard();
+    loadPipelineManifest();
     if (badge) {
-      badge.textContent = "Status: Live Validated (100% Checks Complete)";
-      badge.style.color = "#34d399";
+      badge.textContent = "Browser series audit";
+      badge.style.color = "#fbbf24";
     }
   }, 400);
+}
+
+function shortStamp(value) {
+  if (!value) return "";
+  return value.replace("T", " ").replace(/\.\d+/, "").replace("+00:00", " UTC");
+}
+
+function renderPipelineKpis(manifest) {
+  const grid = document.getElementById("pipelineKpiGrid");
+  const source = document.getElementById("pipelineKpiSource");
+  if (!grid) return;
+
+  if (!manifest) {
+    if (source) source.textContent = "No artifacts/latest_run_manifest.json";
+    grid.innerHTML = `
+      <div class="dq-kpi-card">
+        <span class="dq-kpi-label">Last run</span>
+        <span class="dq-kpi-val" style="font-size:1.1rem;">Not loaded</span>
+        <span class="dq-kpi-footer">Run python3 run_pipeline_local.py --execution-date 2026-10-13</span>
+      </div>`;
+    return;
+  }
+
+  state.pipelineManifest = manifest;
+  const counts = manifest.row_counts || {};
+  const completeness = manifest.completeness || {};
+  const quality = manifest.quality || {};
+  const ratio = completeness.completeness_ratio == null
+    ? "—"
+    : `${Math.round(completeness.completeness_ratio * 1000) / 10}%`;
+  if (source) {
+    source.textContent = `${manifest.data_source} · ${manifest.runtime_status} · ${manifest.run_id}`;
+  }
+
+  const cards = [
+    ["Last status", manifest.status, manifest.execution_date || ""],
+    ["Freshness", manifest.execution_date || "—", shortStamp(manifest.finished_at) || "Gold time unavailable"],
+    ["Completeness", ratio, `${completeness.received_combinations ?? "—"} / ${completeness.expected_combinations ?? "—"} symbol-sessions`],
+    ["Validation", quality.pass_rate_pct != null ? `${quality.pass_rate_pct}%` : "—", quality.processing_status || ""],
+    ["Duplicate keys", String(manifest.duplicate_key_count ?? 0), "Canonical key is (symbol, date)"],
+    ["Rejected rows", String(counts.rejected ?? manifest.invalid_record_count ?? 0), "Conflicts are not loaded"],
+    ["Gold rows", String(counts.gold_total ?? "—"), `${counts.gold_for_execution_date ?? "—"} on the session`],
+    ["Duration", manifest.duration_seconds != null ? `${manifest.duration_seconds}s` : "—", manifest.data_source === "yahoo_finance_chart" ? "Live NSE daily fetch, not a cluster benchmark" : "Local fixture run, not a cluster benchmark"],
+    ["API calls", String(manifest.quota_calls_this_run ?? 0), manifest.quota_note || ""],
+    ["Recovery", manifest.recovered ? "Recovered" : (manifest.failure_injected || "No injected failure"), "At-least-once replay is covered by unit tests"]
+  ];
+
+  grid.innerHTML = cards.map(([label, value, footer]) => `
+    <div class="dq-kpi-card">
+      <span class="dq-kpi-label">${label}</span>
+      <span class="dq-kpi-val" style="font-size:1.15rem;">${value}</span>
+      <span class="dq-kpi-footer">${footer}</span>
+    </div>
+  `).join("");
+}
+
+async function loadPipelineManifest() {
+  try {
+    const response = await fetch("artifacts/latest_run_manifest.json", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const manifest = await response.json();
+    renderPipelineKpis(manifest);
+    const freshnessEl = document.getElementById("dqFreshness");
+    if (freshnessEl) freshnessEl.textContent = manifest.execution_date;
+    const sla = document.getElementById("dqSlaStatus");
+    if (sla) sla.textContent = `Last run ${manifest.status} · ${manifest.finished_at}`;
+    const health = document.getElementById("healthBatch");
+    if (health) {
+      health.textContent = manifest.data_source === "yahoo_finance_chart"
+        ? `NSE daily: ${manifest.execution_date}`
+        : `Fixture batch: ${manifest.execution_date}`;
+    }
+  } catch (error) {
+    state.pipelineManifest = null;
+    renderPipelineKpis(null);
+  }
 }
 
 /* ==========================================================================
@@ -1211,7 +1258,7 @@ function computeMarketAlerts() {
           type: "MA_DIVERGENCE_ANOMALY",
           title: "15-Day Moving Average Gap Exceeded",
           severity: "INFO",
-          observed: `${latest.close > latest.ma15 ? '+' : '-'}${maDiv.toFixed(2)}% ($${latest.close.toFixed(2)} vs $${latest.ma15.toFixed(2)})`,
+          observed: `${latest.close > latest.ma15 ? '+' : '-'}${maDiv.toFixed(2)}% (${inr(latest.close)} vs ${inr(latest.ma15)})`,
           threshold: `|MA15 Gap| ≥ ${maThresh.toFixed(1)}%`,
           reason: `Current price has separated by ${maDiv.toFixed(2)}% from its 15-day moving average, signaling high mean-reversion tension.`,
           ruleType: "Statistical MA Spread",
@@ -1315,9 +1362,7 @@ function resetAlertThresholds() {
   updateAlertThresholds();
 }
 
-// Initialize on DOM load
-document.addEventListener("DOMContentLoaded", () => {
-  initStockData();
+function refreshMarketViews() {
   renderTickerRibbon();
   updateStockHero();
   drawChart();
@@ -1325,6 +1370,82 @@ document.addEventListener("DOMContentLoaded", () => {
   renderScreenerTable();
   renderDataQualityDashboard();
   renderAlertsDashboard();
+}
+
+function applyMarketBook(book) {
+  const entries = Array.isArray(book.symbols) ? book.symbols : [];
+  if (!entries.length) return false;
+  state.warehouseRecords = [];
+  state.stocks = {};
+  entries.forEach(entry => {
+    const candles = (entry.candles || []).map(candle => ({
+      date: candle.date,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: candle.volume,
+      change: candle.change,
+      percentChange: candle.percentChange,
+      ma15: candle.ma15 == null ? null : candle.ma15,
+      ma30: candle.ma30 == null ? null : candle.ma30
+    }));
+    if (!candles.length) return;
+    const latest = candles[candles.length - 1];
+    const trailing = candles.slice(-15);
+    latest.avgVolume15 = Math.round(trailing.reduce((sum, candle) => sum + Number(candle.volume || 0), 0) / trailing.length);
+    state.stocks[entry.symbol] = {
+      name: entry.name,
+      sector: entry.sector,
+      symbol: entry.symbol,
+      candles,
+      latest,
+      dataSource: "NSE daily candle"
+    };
+    state.warehouseRecords.push({
+      symbol: entry.symbol,
+      date: latest.date,
+      daily_open: latest.open,
+      daily_high: latest.high,
+      daily_low: latest.low,
+      daily_close: latest.close,
+      daily_volume: latest.volume,
+      daily_change: latest.percentChange,
+      ma_15: latest.ma15,
+      ma_30: latest.ma30,
+      last_updated: book.as_of
+    });
+  });
+  if (!state.stocks[state.selectedSymbol]) {
+    state.selectedSymbol = entries[0].symbol;
+  }
+  const label = document.getElementById("marketDataSourceLabel");
+  if (label) label.textContent = `NSE · ${book.as_of} · ${book.currency || "INR"}`;
+  const note = document.getElementById("chartDataNote");
+  if (note) note.textContent = `Daily candles through ${book.as_of}. ${book.source}`;
+  const screenerBlurb = document.getElementById("screenerBlurb");
+  if (screenerBlurb) screenerBlurb.textContent = `NSE cash equities through ${book.as_of}: daily move, MA15, and volume versus a trailing baseline.`;
+  return Object.keys(state.stocks).length > 0;
+}
+
+async function loadLiveMarket() {
+  try {
+    const response = await fetch("artifacts/nse_market.json", { cache: "no-store" });
+    if (!response.ok) return false;
+    return applyMarketBook(await response.json());
+  } catch (error) {
+    return false;
+  }
+}
+
+// Initialize on DOM load
+document.addEventListener("DOMContentLoaded", () => {
+  initStockData();
+  refreshMarketViews();
+  loadPipelineManifest();
+  loadLiveMarket().then(loaded => {
+    if (loaded) refreshMarketViews();
+  });
 
   // Chart type toggles
   document.getElementById("btnCandles").onclick = () => {

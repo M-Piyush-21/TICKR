@@ -85,7 +85,7 @@ module.exports = (req, res) => {
       open: latest.open,
       ma15: latest.ma15,
       avgVolume: Math.round(latest.volume * 0.95),
-      dataSource: "AlphaVantage Daily Integration (Demo/Free Tier Cached)"
+      dataSource: "Random series. Not the live NSE book in artifacts/nse_market.json."
     };
   });
 

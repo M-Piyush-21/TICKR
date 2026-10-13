@@ -1,39 +1,14 @@
 // Vercel Serverless Function: /api/quality
-// Genuine Data Quality Validation Engine
-
-const STOCKS_METADATA = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "INTC", "JPM", "V"];
+// Deterministic fixture used to show the check logic. This is not a live lake audit.
 
 function runQualityAudit() {
-  const records = [];
-  const now = new Date();
-  
-  // Generate sample batch dataset (5 days x 10 tickers = 50 rows)
-  for (let i = 0; i < 5; i++) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    const dateStr = d.toISOString().split("T")[0];
-
-    STOCKS_METADATA.forEach(sym => {
-      records.push({
-        symbol: sym,
-        date: dateStr,
-        daily_open: 150.0 + Math.random() * 200,
-        daily_high: 155.0 + Math.random() * 210,
-        daily_low: 145.0 + Math.random() * 195,
-        daily_close: 151.0 + Math.random() * 200,
-        daily_volume: Math.floor(10000000 + Math.random() * 40000000),
-        timestamp: new Date().toISOString()
-      });
-    });
-  }
-
-  // Inject intentional real-world data quality anomalies for genuine detection:
-  // 1. One duplicate record
-  records.push({ ...records[0] });
-  // 2. One missing volume record
-  records.push({ symbol: "INTC", date: "2026-10-05", daily_open: 31.0, daily_high: 31.5, daily_low: 30.8, daily_close: 31.2, daily_volume: null, timestamp: new Date().toISOString() });
-  // 3. One inverted High/Low spread record
-  records.push({ symbol: "TSLA", date: "2026-10-04", daily_open: 180.0, daily_high: 172.0, daily_low: 185.0, daily_close: 175.0, daily_volume: 24000000, timestamp: new Date().toISOString() });
+  const records = [
+    { symbol: "AAPL", date: "2026-10-13", daily_open: 181.5, daily_high: 182.5, daily_low: 180.8, daily_close: 182.0, daily_volume: 45000000 },
+    { symbol: "MSFT", date: "2026-10-13", daily_open: 414.0, daily_high: 418.0, daily_low: 412.0, daily_close: 416.5, daily_volume: 22000000 },
+    { symbol: "AAPL", date: "2026-10-13", daily_open: 181.5, daily_high: 182.5, daily_low: 180.8, daily_close: 182.0, daily_volume: 45000000 },
+    { symbol: "INTC", date: "2026-10-13", daily_open: 31.0, daily_high: 31.5, daily_low: 30.8, daily_close: 31.2, daily_volume: null },
+    { symbol: "TSLA", date: "2026-10-13", daily_open: 180.0, daily_high: 172.0, daily_low: 185.0, daily_close: 175.0, daily_volume: 24000000 }
+  ];
 
   const totalRecords = records.length;
   let passedChecks = 0;
@@ -163,6 +138,8 @@ function runQualityAudit() {
   const passRate = totalChecks > 0 ? Number(((passedChecks / totalChecks) * 100).toFixed(2)) : 0.0;
 
   return {
+    auditScope: "deterministic_fixture_not_live_lake",
+    note: "Fixed examples of a duplicate key, a null volume, and an inverted high/low. The verified batch result is artifacts/latest_run_manifest.json.",
     totalRecordsEvaluated: totalRecords,
     totalChecksExecuted: totalChecks,
     passedChecksCount: passedChecks,
@@ -171,8 +148,8 @@ function runQualityAudit() {
     duplicateRecordsCount: duplicateCount,
     missingCriticalCount: missingCount,
     schemaFailuresCount: schemaFailureCount,
-    latestDataTimestamp: new Date().toISOString(),
-    dataFreshnessLatency: "< 5 minutes",
+    latestDataTimestamp: "2026-10-13",
+    dataFreshnessLatency: "See artifacts/latest_run_manifest.json",
     processingStatus: failedChecks.length === 0 ? "PASSED_CLEAN" : "ANOMALIES_DETECTED",
     failedChecksTable: failedChecks
   };

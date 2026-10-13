@@ -1,13 +1,37 @@
 import json
 import logging
 import os
+import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Dict
 
 import requests
 from confluent_kafka import Producer
 from dotenv import load_dotenv
+
+
+def _bootstrap() -> Path:
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "src" / "contracts" / "data_contract.py").exists():
+            entry = str(parent)
+            if entry not in sys.path:
+                sys.path.insert(0, entry)
+            return parent
+    raise RuntimeError("Could not locate the TICKR project root.")
+
+
+PROJECT_ROOT = _bootstrap()
+
+from src.contracts.data_contract import (  # noqa: E402
+    API_CALL_DELAY_SECONDS,
+    QUOTE_CYCLES_PER_DAY,
+    QUOTE_SNAPSHOT_SYMBOLS,
+)
+from src.ingestion.alphavantage import parse_quote_payload  # noqa: E402
+from src.ingestion.quota import QuotaExceeded, QuotaLedger  # noqa: E402
 
 # Load environment variables
 load_dotenv()
@@ -27,40 +51,21 @@ KAFKA_TOPIC = os.getenv('KAFKA_TOPIC_REALTIME')
 ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY')
 ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
 
-# AlphaVantage Free Tier:
-#   25 API calls/day, 5 API calls/minute
-#
-# Strategy with 8 stocks:
-#   - We rotate through stocks one at a time.
-#   - 12 seconds between each API call respects the 5/min limit.
-#   - One full cycle of 8 stocks takes ~96 seconds.
-#   - With 25 calls/day and 8 stocks we get 3 full cycles/day max.
-#   - We enforce a CYCLE_INTERVAL_SECONDS gap between full cycles to
-#     stay safely within the 25 calls/day budget across the service uptime.
-#
-#   Adjust CYCLES_PER_DAY if you are on a paid AlphaVantage plan.
+# GLOBAL_QUOTE snapshots, not exchange ticks.
+# The free-tier plan is one cycle of QUOTE_SNAPSHOT_SYMBOLS per UTC day.
+# That leaves room for the 10-symbol daily batch and a retry reserve.
+# See src/contracts/data_contract.py. A paid plan would be a config change
+# there, not a tighter loop in this file.
 
-STOCKS = [
-    'AAPL',   # Apple
-    'MSFT',   # Microsoft
-    'GOOGL',  # Alphabet
-    'AMZN',   # Amazon
-    'META',   # Meta
-    'TSLA',   # Tesla
-    'NVDA',   # NVIDIA
-    'INTC',   # Intel
-]
-
-API_CALL_DELAY_SECONDS = 13      # safe buffer between individual calls (5/min limit)
-CYCLES_PER_DAY = 3               # max full cycles on free tier (25 calls / 8 stocks ≈ 3)
-SECONDS_IN_DAY = 86_400
-CYCLE_INTERVAL_SECONDS = SECONDS_IN_DAY // CYCLES_PER_DAY   # ~28 800 s ≈ 8 hours
+STOCKS = list(QUOTE_SNAPSHOT_SYMBOLS)
+LEDGER_PATH = PROJECT_ROOT / "data" / "quota" / "alphavantage_ledger.json"
 
 
 class StreamDataCollector:
     def __init__(self, bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS, topic=KAFKA_TOPIC):
         self.logger = logger
         self.topic = topic
+        self.ledger = QuotaLedger(LEDGER_PATH)
 
         # Track previous prices to calculate change/percent_change
         self._prev_prices: Dict[str, Optional[float]] = {s: None for s in STOCKS}
@@ -92,30 +97,19 @@ class StreamDataCollector:
             }
             response = requests.get(ALPHA_VANTAGE_BASE_URL, params=params, timeout=30)
             response.raise_for_status()
-            data = response.json()
-
-            if "Information" in data:
-                self.logger.error(
-                    f"AlphaVantage rate limit / quota hit: {data['Information']}"
-                )
+            polled_at = datetime.now(timezone.utc).isoformat()
+            parsed = parse_quote_payload(response.json(), symbol, polled_at)
+            if parsed["status"] != "ok":
+                self.logger.error(f"{symbol}: {parsed['status']} — {parsed['message']}")
+                self._last_status = parsed["status"]
                 return None
 
-            if "Error Message" in data:
-                self.logger.error(f"AlphaVantage error for {symbol}: {data['Error Message']}")
-                return None
-
-            quote = data.get("Global Quote", {})
-            if not quote or not quote.get("05. price"):
-                self.logger.warning(f"Empty quote returned for {symbol}")
-                return None
-
-            price = float(quote["05. price"])
+            quote_row = parsed["quote"]
+            price = quote_row["price"]
             prev = self._prev_prices[symbol]
-
-            # AlphaVantage gives change vs previous market close; we also track
-            # intra-session change between our own polling cycles.
-            av_change = float(quote.get("09. change", 0))
-            av_change_pct = float(quote.get("10. change percent", "0%").replace("%", ""))
+            av_change = quote_row["change"]
+            av_change_pct = quote_row["percent_change"]
+            self._last_status = "ok"
 
             # If we have a prior price from this session, override with live delta
             if prev is not None:
@@ -128,14 +122,16 @@ class StreamDataCollector:
             self._prev_prices[symbol] = price
 
             return {
+                "grain": "quote_snapshot",
                 "symbol": symbol,
                 "price": price,
                 "change": session_change,
                 "percent_change": session_change_pct,
-                "volume": int(quote.get("06. volume", 0)),
-                "latest_trading_day": quote.get("07. latest trading day", ""),
-                "previous_close": float(quote.get("08. previous close", 0)),
-                "timestamp": datetime.now().isoformat(),
+                "volume": quote_row["volume"],
+                "latest_trading_day": quote_row["latest_trading_day"],
+                "previous_close": quote_row["previous_close"],
+                "polled_at": polled_at,
+                "timestamp": polled_at,
             }
 
         except requests.exceptions.RequestException as e:
@@ -175,66 +171,77 @@ class StreamDataCollector:
 
     def produce_stock_data(self):
         """
-        Continuously fetches real-time quotes from AlphaVantage and publishes
-        them to Kafka, respecting the free-tier API limits.
+        Publish one GLOBAL_QUOTE snapshot per configured symbol, then exit.
 
-        Cycle behaviour:
-          • Iterate through all STOCKS, fetching one quote at a time.
-          • Sleep API_CALL_DELAY_SECONDS between each call (≤5 calls/min).
-          • After a full cycle, sleep until CYCLE_INTERVAL_SECONDS have elapsed
-            since the cycle started (≈8 h on free tier).
+        This is not a continuous tick feed. The daily quote budget is one
+        cycle. A quota response or an exhausted ledger stops the loop without
+        sending more requests.
         """
-        self.logger.info("Starting AlphaVantage stream producer")
+        self.logger.info("Starting Alpha Vantage quote-snapshot producer")
         self.logger.info(
-            f"Config → {len(STOCKS)} stocks | "
+            f"Config → {len(STOCKS)} symbols | "
             f"{API_CALL_DELAY_SECONDS}s between calls | "
-            f"~{CYCLE_INTERVAL_SECONDS // 3600}h between cycles"
+            f"{QUOTE_CYCLES_PER_DAY} cycle/day. "
+            "These are GLOBAL_QUOTE snapshots, not exchange ticks."
         )
 
         cycle_number = 0
         try:
-            while True:
+            while cycle_number < QUOTE_CYCLES_PER_DAY:
                 cycle_number += 1
-                cycle_start = time.time()
-                self.logger.info(f"=== Starting cycle {cycle_number} ===")
-
+                self.logger.info(f"=== Starting quote cycle {cycle_number} ===")
                 ok_count = 0
                 fail_count = 0
+                stop_for_quota = False
 
-                for i, symbol in enumerate(STOCKS):
+                for index, symbol in enumerate(STOCKS):
+                    try:
+                        self.ledger.authorize("GLOBAL_QUOTE", symbol)
+                    except QuotaExceeded as exc:
+                        self.logger.error(str(exc))
+                        stop_for_quota = True
+                        break
+
+                    self._last_status = "transport_error"
                     stock_data = self.fetch_quote(symbol)
+                    self.ledger.record(
+                        "GLOBAL_QUOTE",
+                        symbol,
+                        "success" if stock_data else self._last_status,
+                    )
+                    if self._last_status == "quota_exhausted":
+                        self.logger.error("Quota response received. No further quote calls will be sent.")
+                        stop_for_quota = True
+                        break
                     if stock_data:
                         self.publish(stock_data)
                         ok_count += 1
                         self.logger.info(
-                            f"[{symbol}] price={stock_data['price']} "
+                            f"[{symbol}] snapshot price={stock_data['price']} "
                             f"change={stock_data['change']:+.4f} "
                             f"({stock_data['percent_change']:+.4f}%)"
                         )
                     else:
                         fail_count += 1
 
-                    # Delay between API calls (except after the last stock in a cycle)
-                    if i < len(STOCKS) - 1:
+                    if index < len(STOCKS) - 1:
                         self.logger.debug(
-                            f"Waiting {API_CALL_DELAY_SECONDS}s before next API call…"
+                            f"Waiting {API_CALL_DELAY_SECONDS}s before next API call."
                         )
                         time.sleep(API_CALL_DELAY_SECONDS)
 
-                # Flush any buffered Kafka messages
                 self.producer.flush()
                 self.logger.info(
-                    f"Cycle {cycle_number} complete — OK: {ok_count}, Failed: {fail_count}"
+                    f"Quote cycle {cycle_number} complete — OK: {ok_count}, Failed: {fail_count}"
                 )
+                if stop_for_quota:
+                    break
 
-                # Wait for the remainder of the cycle interval before starting the next cycle
-                elapsed = time.time() - cycle_start
-                wait = max(0, CYCLE_INTERVAL_SECONDS - elapsed)
-                self.logger.info(
-                    f"Sleeping {wait / 3600:.2f}h until next cycle "
-                    f"(free-tier budget management)…"
-                )
-                time.sleep(wait)
+            self.logger.info(
+                "Quote budget for this process is spent. "
+                "Exiting instead of polling again. Restart on the next UTC day "
+                "if another snapshot cycle is required."
+            )
 
         except KeyboardInterrupt:
             self.logger.info("Producer stopped by user (KeyboardInterrupt)")
