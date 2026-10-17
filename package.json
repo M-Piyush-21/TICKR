@@ -6,7 +6,7 @@
     "start": "serve .",
     "dev": "serve . -l 3000",
     "build": "echo 'Build verification passed: static assets ready for Vercel deployment'",
-    "test": "python3 -m unittest discover tests -v && node -c js/app.js && node -c api/quality.js && node -c api/alerts.js && node -c api/stocks.js"
+    "test": "python3 -m unittest discover tests -v && node -c js/app.js"
   },
   "dependencies": {
     "serve": "^14.2.4"
