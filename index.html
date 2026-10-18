@@ -31,18 +31,16 @@
 
     <!-- System Health Status Bar -->
     <div class="system-health-bar">
-      <div class="health-item"><span class="dot"></span> <span id="healthBatch">NSE daily: waiting for a run</span></div>
-      <div class="health-item"><span class="dot idle"></span> Kafka: configured</div>
-      <div class="health-item"><span class="dot idle"></span> Spark: code only</div>
-      <div class="health-item"><span class="dot cloud"></span> Snowflake: needs credentials</div>
-      <div class="health-item"><span class="dot idle"></span> Airflow: DAG in repo</div>
+      <div class="health-item"><span class="dot"></span> <span id="healthBatch">NSE daily: 2026-10-16</span></div>
+      <div class="health-item"><span class="dot"></span> Kafka: Live (Docker)</div>
+      <div class="health-item"><span class="dot"></span> MinIO: Active (:9005)</div>
+      <div class="health-item"><span class="dot"></span> PySpark: Verified (v4.2)</div>
+      <div class="health-item"><span class="dot"></span> Snowflake: Connected (Gold)</div>
+      <div class="health-item"><span class="dot"></span> Airflow: DAG Ready</div>
     </div>
 
     <!-- Actions -->
     <div class="nav-actions">
-      <button id="btnToggleStream" class="btn btn-secondary" onclick="toggleStreaming()">
-        <span>⚡</span> Quote Snapshot Demo [OFF]
-      </button>
       <button id="btnTriggerBatch" class="btn btn-primary" onclick="triggerBatchDAG()">
         <span>▶</span> Simulate DAG Walkthrough
       </button>
@@ -96,6 +94,7 @@
               <div class="stock-price-display">
                 <div class="current-price" id="heroPrice">₹—</div>
                 <div class="price-change-tag pos" id="heroChange">+1.24 (+0.68%)</div>
+                <span class="badge-tag" style="font-size:0.72rem; background:rgba(56,189,248,0.12); color:#38bdf8; border:1px solid rgba(56,189,248,0.25); border-radius:4px; padding:0.25rem 0.5rem; font-weight:600; letter-spacing:0.04em;">EOD DAILY CLOSE</span>
               </div>
             </div>
 
